@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -234,3 +235,134 @@ class HardwareTest(unittest.TestCase):
                                          machine(36 * hardware.GIB),
                                          model_metadata())
         self.assertEqual(choice.native, 32768)
+
+    def test_parse_gpustat_reads_usage_and_processes(self):
+        payload = json.dumps({"gpus": [
+            {"index": 0,
+             "name": "NVIDIA RTX 4090",
+             "memory.total": 24564,
+             "memory.used": 3200,
+             "memory.unified": False,
+             "utilization.gpu": 35,
+             "processes": [{"pid": 4242, "command": "llama-server",
+                            "gpu_memory_usage": 1234, "username": "davide"}]},
+            {"index": 1,
+             "name": "NVIDIA RTX 3090",
+             "memory.total": 24576,
+             "memory.used": None,
+             "utilization.gpu": None,
+             "processes": []},
+        ]})
+        gpus = hardware.parse_gpustat(payload)
+        self.assertEqual(len(gpus), 2)
+        first = gpus[0]
+        self.assertEqual(first.name, "NVIDIA RTX 4090")
+        self.assertEqual(first.total, 24564 * 1024 * 1024)
+        self.assertEqual(first.used, 3200 * 1024 * 1024)
+        self.assertEqual(first.free, (24564 - 3200) * 1024 * 1024)
+        self.assertEqual(first.utilization, 35)
+        self.assertEqual(first.processes[0]["pid"], 4242)
+        self.assertFalse(first.unified)
+        self.assertEqual(first.source, "gpustat")
+        self.assertIsNone(gpus[1].free)
+        self.assertIsNone(gpus[1].used)
+        self.assertIsNone(gpus[1].utilization)
+
+    def test_parse_gpustat_rejects_bad_json(self):
+        self.assertIsNone(hardware.parse_gpustat("not json"))
+        self.assertIsNone(hardware.parse_gpustat("{}"))
+
+    def test_parse_gpustat_reads_unified_flag(self):
+        payload = json.dumps({"gpus": [{
+            "name": "NVIDIA GB10",
+            "memory.total": 131072,
+            "memory.used": 8192,
+            "memory.unified": True,
+            "utilization.gpu": 5,
+            "processes": [],
+        }]})
+        gpus = hardware.parse_gpustat(payload)
+        self.assertEqual(gpus[0].index, 0)
+        self.assertTrue(gpus[0].unified)
+        self.assertEqual(gpus[0].free, (131072 - 8192) * 1024 * 1024)
+
+    def test_device_tree_marks_tegra_unified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compatible = Path(tmp) / "compatible"
+            compatible.write_text("nvidia,tegra234\0nvidia,tegra\0")
+            self.assertTrue(hardware._device_tree_unified(compatible))
+            other = Path(tmp) / "other"
+            other.write_text("apple,arm-platform\0")
+            self.assertFalse(hardware._device_tree_unified(other))
+
+    def test_detect_gpus_returns_empty_when_all_probes_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                hardware.detect_gpus(runner=lambda command, timeout=5: "",
+                                     sysfs_root=Path(tmp),
+                                     displays=lambda: (None, None)),
+                [])
+
+    def test_gpustat_falls_back_to_nvidia_smi(self):
+        def runner(command, timeout=5):
+            if command[0] == "nvidia-smi":
+                return "NVIDIA RTX 4090, 24564, 3200, 21364, 35\n"
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gpus = hardware.detect_gpus(runner=runner, sysfs_root=Path(tmp))
+        self.assertEqual(len(gpus), 1)
+        self.assertEqual(gpus[0].name, "NVIDIA RTX 4090")
+        self.assertEqual(gpus[0].source, "nvidia-smi")
+
+    def test_nvidia_smi_reads_used_free_util(self):
+        gpus = hardware.nvidia_smi_gpus(
+            runner=lambda command, timeout=5:
+            "NVIDIA RTX 4090, 24564, 3200, 21364, 35\n")
+        self.assertEqual(len(gpus), 1)
+        gpu = gpus[0]
+        self.assertEqual(gpu.total, 24564 * 1024 * 1024)
+        self.assertEqual(gpu.used, 3200 * 1024 * 1024)
+        self.assertEqual(gpu.free, 21364 * 1024 * 1024)
+        self.assertEqual(gpu.utilization, 35)
+        self.assertEqual(gpu.source, "nvidia-smi")
+
+    def test_amd_sysfs_reads_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            device = Path(tmp) / "card0" / "device"
+            device.mkdir(parents=True)
+            (device / "mem_info_vram_total").write_text("8589934592")
+            (device / "mem_info_vram_used").write_text("1073741824")
+            gpus = hardware.amd_sysfs_gpus(sysfs_root=Path(tmp))
+        self.assertEqual(len(gpus), 1)
+        gpu = gpus[0]
+        self.assertEqual(gpu.name, "AMD GPU")
+        self.assertEqual(gpu.total, 8589934592)
+        self.assertEqual(gpu.used, 1073741824)
+        self.assertEqual(gpu.free, 8589934592 - 1073741824)
+        self.assertEqual(gpu.source, "sysfs")
+
+    def test_unified_gpu_name(self):
+        self.assertTrue(hardware.is_unified_gpu_name("NVIDIA GB10"))
+        self.assertTrue(hardware.is_unified_gpu_name("Jetson Orin"))
+        self.assertFalse(hardware.is_unified_gpu_name("NVIDIA RTX 4090"))
+
+    def test_detect_hardware_linux_marks_unified_gb10(self):
+        stats = hardware.GpuStats(index=0, name="NVIDIA GB10",
+                                  total=128 * hardware.GIB,
+                                  used=8 * hardware.GIB,
+                                  free=120 * hardware.GIB,
+                                  utilization=5, unified=True,
+                                  source="gpustat")
+        with tempfile.TemporaryDirectory() as tmp:
+            machine = hardware.detect_hardware(
+                platform_name="linux",
+                linux_cpu=lambda: "ARM",
+                linux_ram=lambda: (128 * hardware.GIB, 120 * hardware.GIB),
+                linux_gpu=lambda: ("NVIDIA GB10", 128 * hardware.GIB),
+                gpu_stats=lambda: [stats],
+                models_dir=Path(tmp))
+        self.assertTrue(machine.unified)
+        self.assertEqual(machine.gpu, "NVIDIA GB10")
+        self.assertEqual(machine.vram, 128 * hardware.GIB)
+        self.assertEqual(machine.gpus, [stats])

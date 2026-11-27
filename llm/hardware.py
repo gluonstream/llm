@@ -1,18 +1,24 @@
 """Detect local hardware and estimate whether a model will fit."""
+import json
 import os
 import platform
 import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from . import gguf, host, render
 
 GIB = 1024 ** 3
+MIB = 1024 * 1024
 DISK_HEADROOM = 512 * 1024 * 1024
+DEVICE_TREE_COMPATIBLE = "/proc/device-tree/compatible"
+UNIFIED_GPU_PATTERN = re.compile(r"\b(gb10|jetson|orin|xavier|tegra)\b",
+                                 re.IGNORECASE)
+UNIFIED_GPU_WORDS = ("gb10", "jetson", "orin", "xavier", "tegra")
 
 
 @dataclass
@@ -25,6 +31,20 @@ class Hardware:
     vram: int
     disk_free: int
     available_ram: int = 0
+    gpus: list = field(default_factory=list)
+
+
+@dataclass
+class GpuStats:
+    index: int = 0
+    name: str = ""
+    total: Optional[int] = None
+    used: Optional[int] = None
+    free: Optional[int] = None
+    utilization: Optional[float] = None
+    processes: list = field(default_factory=list)
+    unified: bool = False
+    source: str = "unknown"
 
 
 @dataclass
@@ -136,6 +156,202 @@ def _linux_gpu(sysfs_root=None, runner=None):
     return None, None
 
 
+def _read_int(path):
+    try:
+        return int(_read_text(path).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def _mib_to_bytes(value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("GPU memory must be a number")
+    return int(value) * MIB
+
+
+def _gpu_number(value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("GPU metric must be a number")
+    return value
+
+
+def _sum_totals(gpus):
+    totals = [gpu.total for gpu in gpus if gpu.total is not None]
+    return sum(totals) if totals else None
+
+
+def is_unified_gpu_name(name):
+    if not isinstance(name, str) or not name:
+        return False
+    return bool(UNIFIED_GPU_PATTERN.search(name))
+
+
+def _device_tree_unified(path=None):
+    text = _read_text(path or DEVICE_TREE_COMPATIBLE).lower()
+    return "nvidia" in text and any(word in text for word in UNIFIED_GPU_WORDS)
+
+
+def _linux_gpu_stats(name, vram):
+    if not name:
+        return []
+    if vram is None:
+        source = "lspci"
+    elif name == "AMD GPU":
+        source = "sysfs"
+    else:
+        source = "nvidia-smi"
+    return [GpuStats(index=0, name=name, total=vram,
+                     unified=is_unified_gpu_name(name), source=source)]
+
+
+def _display_gpus(name, vram):
+    if not name:
+        return []
+    return [GpuStats(index=0, name=name, total=vram,
+                     unified=is_unified_gpu_name(name),
+                     source="system_profiler")]
+
+
+def parse_gpustat(payload):
+    try:
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            return None
+        entries = data.get("gpus")
+        if not isinstance(entries, list):
+            return None
+        gpus = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return None
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return None
+            total = _mib_to_bytes(entry.get("memory.total"))
+            used = _mib_to_bytes(entry.get("memory.used"))
+            free = (max(total - used, 0)
+                    if total is not None and used is not None else None)
+            raw_processes = entry.get("processes") or []
+            if not isinstance(raw_processes, list):
+                return None
+            processes = []
+            for process in raw_processes:
+                if not isinstance(process, dict):
+                    return None
+                processes.append({
+                    "pid": process.get("pid"),
+                    "command": process.get("command"),
+                    "gpu_memory_usage": process.get("gpu_memory_usage"),
+                })
+            gpus.append(GpuStats(
+                index=int(entry.get("index", 0)),
+                name=name.strip(),
+                total=total,
+                used=used,
+                free=free,
+                utilization=_gpu_number(entry.get("utilization.gpu")),
+                processes=processes,
+                unified=bool(entry.get("memory.unified", False)),
+                source="gpustat",
+            ))
+        return gpus
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+
+
+def gpustat_gpus(runner=None):
+    runner = runner or _run
+    output = runner(["gpustat", "--json"])
+    if not output or not output.strip():
+        return None
+    return parse_gpustat(output)
+
+
+def nvidia_smi_gpus(runner=None):
+    runner = runner or _run
+    output = runner([
+        "nvidia-smi",
+        "--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu",
+        "--format=csv,noheader,nounits"])
+    gpus = []
+    for index, line in enumerate((output or "").splitlines()):
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 4 or not parts[0]:
+            continue
+        total_mib = _int_or_none(parts[1])
+        used_mib = _int_or_none(parts[2])
+        free_mib = _int_or_none(parts[3])
+        total = total_mib * MIB if total_mib is not None else None
+        used = used_mib * MIB if used_mib is not None else None
+        free = free_mib * MIB if free_mib is not None else None
+        if free is None and total is not None and used is not None:
+            free = max(total - used, 0)
+        utilization = _int_or_none(parts[4]) if len(parts) > 4 else None
+        gpus.append(GpuStats(
+            index=index,
+            name=parts[0],
+            total=total,
+            used=used,
+            free=free,
+            utilization=utilization,
+            unified=is_unified_gpu_name(parts[0]),
+            source="nvidia-smi",
+        ))
+    return gpus or None
+
+
+def amd_sysfs_gpus(sysfs_root=None):
+    root = Path(sysfs_root) if sysfs_root else Path("/sys/class/drm")
+    gpus = []
+    for index, device in enumerate(sorted(root.glob("card*/device"))):
+        total = _read_int(device / "mem_info_vram_total")
+        if total is None:
+            continue
+        used = _read_int(device / "mem_info_vram_used")
+        free = max(total - used, 0) if used is not None else None
+        gpus.append(GpuStats(index=index, name="AMD GPU", total=total,
+                             used=used, free=free, unified=False,
+                             source="sysfs"))
+    return gpus or None
+
+
+def detect_gpus(runner=None, sysfs_root=None, displays=None):
+    gpus = gpustat_gpus(runner)
+    if gpus:
+        return gpus
+    gpus = nvidia_smi_gpus(runner)
+    if gpus:
+        return gpus
+    gpus = amd_sysfs_gpus(sysfs_root)
+    if gpus:
+        return gpus
+    if host.IS_LINUX:
+        name, vram = _linux_gpu(sysfs_root=sysfs_root, runner=runner)
+        gpus = _linux_gpu_stats(name, vram)
+        if gpus:
+            return gpus
+    if host.IS_MACOS:
+        gpu, vram = (displays or _displays)()
+        gpus = _display_gpus(gpu, vram)
+        if gpus:
+            return gpus
+    return []
+
+
 def _filesystem_type(path, runner=None):
     runner = runner or _run
     output = (runner(["stat", "-f", "-c", "%T", str(path)]) or "").strip()
@@ -166,27 +382,38 @@ def _disk_free(path, runner=None):
 
 def detect_hardware(sysctl=None, displays=None, models_dir=None, include_gpu=True,
                     platform_name=None, linux_cpu=None, linux_ram=None,
-                    linux_gpu=None):
+                    linux_gpu=None, gpu_stats=None):
     platform_name = platform_name or sys.platform
     target = models_dir or Path.home()
     if platform_name.startswith("linux"):
         cpu = linux_cpu or _linux_cpu
         ram = linux_ram or _linux_ram
-        gpu_probe = linux_gpu or _linux_gpu
         try:
             total_ram, available_ram = ram()
         except (TypeError, ValueError):
             total_ram, available_ram = 0, 0
         chip = cpu() or platform.processor() or "unknown"
         if include_gpu:
-            gpu, vram = gpu_probe()
+            if gpu_stats:
+                gpus = list(gpu_stats() or [])
+            elif linux_gpu:
+                name, vram = linux_gpu()
+                gpus = _linux_gpu_stats(name, vram)
+            else:
+                gpus = detect_gpus()
+            gpu = next((item.name for item in gpus if item.name), None)
+            vram = _sum_totals(gpus)
+            unified = any(item.unified for item in gpus)
+            if not unified:
+                unified = _device_tree_unified()
         else:
-            gpu, vram = None, None
+            gpu, vram, gpus, unified = None, None, [], False
         return Hardware(chip=chip, model=platform.machine() or "unknown",
-                        total_ram=total_ram, unified=False,
+                        total_ram=total_ram, unified=unified,
                         gpu=gpu or "unknown", vram=vram,
                         disk_free=_disk_free(target),
-                        available_ram=available_ram or 0)
+                        available_ram=available_ram or 0, gpus=gpus)
+    display_probe = displays
     sysctl = sysctl or _sysctl
     displays = displays or _displays
     try:
@@ -203,14 +430,22 @@ def detect_hardware(sysctl=None, displays=None, models_dir=None, include_gpu=Tru
     model = sysctl("hw.model") or "unknown"
     unified = sysctl("hw.optional.arm64").strip() == "1" or platform.machine() == "arm64"
     if include_gpu:
-        gpu, vram = displays()
+        if gpu_stats:
+            gpus = list(gpu_stats() or [])
+        elif display_probe:
+            name, vram = display_probe()
+            gpus = _display_gpus(name, vram)
+        else:
+            gpus = detect_gpus(displays=displays)
+        gpu = next((item.name for item in gpus if item.name), None)
+        vram = _sum_totals(gpus)
     else:
-        gpu, vram = None, None
+        gpu, vram, gpus = None, None, []
     if not gpu and unified:
         gpu = chip
     return Hardware(chip=chip, model=model, total_ram=total_ram, unified=unified,
                     gpu=gpu or "unknown", vram=vram, disk_free=_disk_free(target),
-                    available_ram=0)
+                    available_ram=0, gpus=gpus)
 
 
 def memory_budget(total_ram, unified=True, available=None):
