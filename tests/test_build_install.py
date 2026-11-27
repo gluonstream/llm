@@ -19,6 +19,7 @@ def env_for(tmp, **extra):
         "LMM_BUILD_DIR": str(Path(tmp) / "build dir"),
         "LMM_DIST_DIR": str(Path(tmp) / "dist dir"),
         "LMM_SKIP_TESTS": "1",
+        "LMM_SKIP_LLAMA_CPP_UPGRADE": "1",
     })
     env.update(extra)
     return env
@@ -82,6 +83,30 @@ class BuildTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("FAILED", result.stdout + result.stderr)
             self.assertFalse((Path(tmp) / "dist dir" / "llm").exists())
+
+    def test_build_rejects_unsupported_os(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(BUILD)], cwd=ROOT,
+                env=env_for(tmp, OSTYPE="plan9"),
+                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported OS", result.stderr)
+
+    def test_build_skips_package_check_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            marker = Path(tmp) / "brew-called"
+            brew = bindir / "brew"
+            brew.write_text("#!/bin/sh\ntouch %s\n" % marker)
+            brew.chmod(0o755)
+            env = env_for(tmp)
+            env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+            result = subprocess.run(["bash", str(BUILD)], cwd=ROOT,
+                                    env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
 
 
 class InstallTest(unittest.TestCase):
@@ -169,6 +194,28 @@ class InstallTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("./build.sh", result.stderr)
 
+    def test_install_rejects_unsupported_os(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(ROOT / "install.sh")], cwd=ROOT,
+                env=env_for(tmp, OSTYPE="plan9"),
+                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported OS", result.stderr)
+
     def run_help(self, executable):
         return subprocess.run([str(executable), "help"], env=self.env,
                               capture_output=True, text=True).returncode
+
+
+class UpdateScriptTest(unittest.TestCase):
+    def test_update_script_is_executable_and_rejects_unsupported_os(self):
+        script = ROOT / "update.sh"
+        self.assertTrue(os.access(script, os.X_OK))
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(script)], cwd=ROOT,
+                env=env_for(tmp, OSTYPE="plan9"),
+                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported OS", result.stderr)
