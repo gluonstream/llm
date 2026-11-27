@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import config, diagnose, hardware, hub, render, service
+from . import config, diagnose, hardware, hub, render, service, update
 
 _subparsers = {}
 MODELS_DIR = Path.home() / ".local" / "share" / "llm" / "models"
@@ -350,6 +350,14 @@ def cmd_doctor(args):
     return 0
 
 
+def cmd_update(args):
+    checkout = Path(args.dir).expanduser() if args.dir else None
+    print("Updating llm from %s" % update.REPO_URL)
+    path = update.update(checkout=checkout)
+    print("Updated llm from %s" % path)
+    return 0
+
+
 def cmd_help(args):
     parser = build_parser()
     if args.topic:
@@ -417,6 +425,9 @@ def build_parser(prog=None):
     command.add_argument("--requires-llama-cpp", metavar="VERSION")
     command.add_argument("--force", action="store_true",
                          help="replace an existing mismatched download")
+    command = add("update", cmd_update,
+                  "fetch the latest source, build, and install")
+    command.add_argument("--dir", help="checkout directory")
     add("doctor", cmd_doctor, "check llama.cpp, models, port and last failure")
     command = add("help", cmd_help, "show this help or help for one command")
     command.add_argument("topic", nargs="?")
