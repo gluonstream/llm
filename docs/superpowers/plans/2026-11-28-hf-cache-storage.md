@@ -75,7 +75,8 @@ def test_discover_skips_mmproj_part_and_broken(self)
     # mmproj-x.gguf, y.gguf.part, broken symlink -> none
 
 def test_discover_synthesizes_deterministic_ids_and_aliases(self)
-    # alias from stem; split suffix removed; id slug(repo + filename)
+    # alias from stem; split suffix removed from BOTH alias and id:
+    # id == slug(repo + "-" + stem), never contains "-00001-of-00002"
 
 def test_profile_for_shape(self)
     # id, alias, repo, filename (relative), revision, path, context 8192, sampling, source "cache"
@@ -116,7 +117,7 @@ Expected: `ModuleNotFoundError: No module named 'llm.hfcache'`.
 
 `profile_for`:
 - `relative = group["entry"].relative_to(snapshot_dir)`; `stem = group["entry"].stem`; if split, strip `-?????-of-?????`.
-- `alias = slug(stem)`, `id = slug(repo + "-" + str(relative.with_suffix("")))`.
+- `alias = slug(stem)`, `id = slug(repo + "-" + stem)` — the same shard-free stem, so the id is stable regardless of how many shards the set has.
 - return the profile shape from the spec; `context=8192`; `sampling = sampling or DEFAULT_SAMPLING` where `DEFAULT_SAMPLING` is a literal dict in `hfcache.py`. Task 2's `config` passes its own `DEFAULT_SAMPLING` into `discover`, avoiding a `config` ↔ `hfcache` import cycle.
 
 - [ ] **Step 4: Run tests to verify they pass**
