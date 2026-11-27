@@ -88,13 +88,15 @@ class HardwareTest(unittest.TestCase):
                 ("AMD GPU", 8589934592))
 
     def test_linux_gpu_falls_back_to_lspci(self):
-        def runner(command, timeout=5):
-            if command[0] == "lspci":
-                return "00:02.0 VGA compatible controller: Intel Corporation Xe\n"
-            return ""
-        name, vram = hardware._linux_gpu(runner=runner)
-        self.assertIn("Intel", name)
-        self.assertIsNone(vram)
+        with tempfile.TemporaryDirectory() as tmp:
+            def runner(command, timeout=5):
+                if command[0] == "lspci":
+                    return ("00:02.0 VGA compatible controller: "
+                            "Intel Corporation Xe\n")
+                return ""
+            name, vram = hardware._linux_gpu(sysfs_root=Path(tmp), runner=runner)
+            self.assertIn("Intel", name)
+            self.assertIsNone(vram)
 
     def test_linux_gpu_returns_none_when_all_probes_are_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
