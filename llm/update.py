@@ -31,12 +31,15 @@ def _run(command, cwd=None, runner=subprocess.run):
         runner(command, cwd=str(cwd) if cwd is not None else None, check=True)
     except subprocess.CalledProcessError as exc:
         raise UpdateError("command failed: %s" % " ".join(command)) from exc
+    except OSError as exc:
+        raise UpdateError("command failed: %s: %s"
+                          % (" ".join(command), exc)) from exc
 
 
 def update(checkout=None, repo_url=REPO_URL, runner=subprocess.run):
     if shutil.which("git") is None:
         raise UpdateError("git not found; install git and retry")
-    checkout = Path(checkout) if checkout is not None else default_checkout()
+    checkout = Path(checkout).expanduser() if checkout is not None else default_checkout()
     if checkout.exists():
         if not (checkout / ".git").is_dir():
             raise UpdateError("%s is not a git checkout; remove it and retry" % checkout)

@@ -94,3 +94,34 @@ class UpdateTest(unittest.TestCase):
                     update.update(checkout=Path(tmp) / "llm-update",
                                   runner=FakeRunner())
         self.assertIn("git", str(caught.exception))
+
+    def test_update_expands_user_in_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = FakeRunner()
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                result = update.update(checkout="~/custom", runner=runner)
+            expected = Path(tmp) / "custom"
+        self.assertEqual(result, expected)
+        self.assertEqual(runner.calls[0][0],
+                         ["git", "clone", update.REPO_URL, str(expected)])
+
+    def test_main_forwards_dir_to_update(self):
+        with mock.patch.object(update, "update",
+                               return_value=Path("/tmp/custom")) as patched:
+            with mock.patch("builtins.print"):
+                self.assertEqual(update.main(["--dir", "/tmp/custom"]), 0)
+        patched.assert_called_once_with(checkout="/tmp/custom")
+
+    def test_update_reports_unlaunchable_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp) / "llm-update"
+            (checkout / ".git").mkdir(parents=True)
+
+            def runner(command, cwd=None, check=False):
+                if command == ["./build.sh"]:
+                    raise PermissionError(13, "Permission denied")
+
+            with self.assertRaises(update.UpdateError) as caught:
+                update.update(checkout=checkout, runner=runner)
+        self.assertIn("./build.sh", str(caught.exception))
+        self.assertIn("Permission denied", str(caught.exception))
