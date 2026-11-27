@@ -90,3 +90,22 @@ def brew_llama_cpp_status():
     if installed:
         return "Homebrew llama.cpp %s" % installed
     return None
+
+
+def llama_cpp_package_status():
+    if host.IS_MACOS:
+        return brew_llama_cpp_status()
+    if not host.IS_LINUX:
+        return None
+    path = config.LLAMA_SERVER
+    try:
+        completed = subprocess.run(
+            ["pacman", "-Qo", path], capture_output=True, text=True,
+            check=False, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = "%s%s" % (completed.stdout or "", completed.stderr or "")
+    match = re.search(r"is owned by (\S+) (\S+)", text)
+    if match:
+        return "Arch package %s %s" % (match.group(1), match.group(2))
+    return None

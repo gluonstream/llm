@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import config, diagnose, hardware, hub, render, service, update
+from . import config, diagnose, hardware, host, hub, render, service, update
 
 _subparsers = {}
 MODELS_DIR = Path.home() / ".local" / "share" / "llm" / "models"
@@ -294,9 +294,9 @@ def cmd_get(args):
 def cmd_doctor(args):
     version = diagnose.llama_server_version(config.LLAMA_SERVER)
     print("llama-server: %s" % (version["raw"] or "not found at " + config.LLAMA_SERVER))
-    brew = diagnose.brew_llama_cpp_status()
-    if brew:
-        print("Homebrew:     " + brew)
+    package = diagnose.llama_cpp_package_status()
+    if package:
+        print(("Homebrew:     " if host.IS_MACOS else "Package:      ") + package)
     machine = hardware.detect_hardware(models_dir=MODELS_DIR)
     budget = hardware.memory_budget(machine.total_ram, machine.unified,
                                     machine.available_ram)
@@ -306,6 +306,8 @@ def cmd_doctor(args):
     if budget:
         details += ", usable ~%s" % render.human_size(budget)
     print("Hardware:     " + details)
+    if not os.access(config.LSOF, os.X_OK):
+        print("warning: lsof not found; port ownership checks are limited")
     if machine.disk_free is not None:
         print("Disk free:    %s" % render.human_size(machine.disk_free))
 
