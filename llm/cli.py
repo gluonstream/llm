@@ -13,18 +13,7 @@ DEFAULT_SAMPLING = {"temperature": 0.7, "top_p": 1.0, "min_p": 0.01, "repeat_pen
 
 
 def _local_size(profile):
-    path = profile.get("path")
-    if not path:
-        return None
-    model = Path(path)
-    try:
-        if "-00001-of-" in model.name:
-            total = sum(part.stat().st_size for part in model.parent.glob("*.gguf"))
-            return total if total > 0 else None
-        size = model.stat().st_size
-        return size if size > 0 else None
-    except OSError:
-        return None
+    return config.model_size(profile) or None
 
 
 def _running_info(profiles):
@@ -83,7 +72,7 @@ def cmd_use(args):
     profile = config.resolve_model(args.model)
     with service.locked():
         was_running = service.running() is not None
-        config.select_profile(profile["id"])
+        config.select_profile(profile["id"], context=args.context_size)
         if was_running:
             service.stop()
             pid, created, started = service.start(profile["id"])
@@ -231,9 +220,16 @@ def cmd_get(args):
         destination = MODELS_DIR / model_id
 
     size_text = render.human_size(chosen["size"]) if chosen["size"] else "unknown size"
+    if args.context is not None:
+        context = args.context
+        context_auto = False
+    elif existing:
+        context = existing.get("context", config.DEFAULT_CONTEXT)
+        context_auto = existing.get("context_auto", False)
+    else:
+        context = hardware.recommended_context()
+        context_auto = True
     if not existing or args.force:
-        context = (args.context if args.context is not None
-                   else (existing.get("context") if existing else 8192))
         warnings = hardware.preflight(
             chosen["size"], context, models_dir=MODELS_DIR)
         if warnings:
@@ -271,6 +267,7 @@ def cmd_get(args):
                         "filename": chosen["name"]})
         if args.context is not None:
             profile["context"] = args.context
+            profile["context_auto"] = False
     else:
         profile = {
             "id": model_id,
@@ -279,7 +276,8 @@ def cmd_get(args):
             "path": str(path),
             "directory": str(destination),
             "filename": chosen["name"],
-            "context": args.context or 8192,
+            "context": context,
+            "context_auto": context_auto,
             "sampling": dict(DEFAULT_SAMPLING),
         }
     if args.requires_llama_cpp:
@@ -417,6 +415,8 @@ def build_parser(prog=None):
     add("status", cmd_status, "show selected model, service health and endpoint")
     command = add("use", cmd_use, "select a model; restart the service if it is running")
     command.add_argument("model")
+    command.add_argument("--context-size", type=int, default=None,
+                         help="override context size (tokens) for this selection")
     command = add("start", cmd_start, "start the selected model")
     command.add_argument("model", nargs="?")
     command.add_argument("--no-wait", action="store_true")
