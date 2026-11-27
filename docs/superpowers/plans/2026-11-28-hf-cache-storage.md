@@ -282,7 +282,7 @@ Expected: `ModuleNotFoundError: No module named 'llm.migrate'`.
 4. else `os.link(source, blob)`; on `OSError` `shutil.copy2`; remove source only after success.
 5. snapshot = `expected_snapshot(repo, filename, commit)` (commit is pinned, so no ref needed); `mkdir(parents=True)`; `os.symlink(os.path.relpath(blob, snapshot.parent), snapshot)`.
 6. write `refs/main` with the commit only when the mapping's `revision` is `main`.
-7. after all files: if `keep_old` is false, `shutil.rmtree(source_dir)`.
+7. after all files: if `keep_old` is false, `shutil.rmtree(source_dir)`. When deciding whether the directory is fully migrated, ignore the known metadata/lock files `download-manifest.json`, `download.lock`, `.DS_Store`, and any `*.part`; any other leftover keeps the directory and is reported.
 
 `cmd_migrate_cache`: parser flags `--dry-run`, `--verify`, `--keep-old`; print `SOURCE → REPO @ commit` rows and a summary; return 0 unless an error.
 
