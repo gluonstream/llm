@@ -13,6 +13,14 @@ from . import host, render
 GIB = 1024 ** 3
 DISK_HEADROOM = 512 * 1024 * 1024
 
+# Context tiers. 12 GiB of usable VRAM/RAM is enough for 32k; larger
+# machines get 64k, and very large unified/discrete memory gets 128k.
+SMALL_CONTEXT = 32768
+DEFAULT_CONTEXT = 65536
+LARGE_CONTEXT = 131072
+SMALL_MEMORY = 12 * GIB
+LARGE_MEMORY = 128 * GIB
+
 
 @dataclass
 class Hardware:
@@ -207,6 +215,26 @@ def memory_budget(total_ram, unified=True, available=None):
         return None
     base = available if available and available > 0 else total_ram
     return int(base * (0.80 if unified else 0.75))
+
+
+def context_memory(machine):
+    """Memory that constrains the context: VRAM on a dGPU, else system RAM."""
+    if machine.unified:
+        return machine.available_ram or machine.total_ram
+    return machine.vram or machine.available_ram or machine.total_ram
+
+
+def recommended_context(machine=None):
+    """Pick a context size from the memory that constrains the model."""
+    machine = machine or detect_hardware()
+    memory = context_memory(machine)
+    if memory <= 0:
+        return DEFAULT_CONTEXT
+    if memory <= SMALL_MEMORY:
+        return SMALL_CONTEXT
+    if memory > LARGE_MEMORY:
+        return LARGE_CONTEXT
+    return DEFAULT_CONTEXT
 
 
 def estimate_required(model_size, context=8192):

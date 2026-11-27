@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -49,6 +50,17 @@ class CliTest(unittest.TestCase):
     def test_unknown_model_reports_choices(self):
         with mock.patch.object(config, "SELECTION", Path("/nonexistent/selection.json")):
             self.assertEqual(self._main(["use", "nope"]), 1)
+
+    def test_use_context_size_persists_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            selection = Path(tmp) / "selected-model.json"
+            with mock.patch.object(config, "SELECTION", selection), \
+                 mock.patch.object(service, "running", return_value=None):
+                self.assertEqual(
+                    self._main(["use", "inkling", "--context-size", "16384"]), 0)
+            self.assertEqual(json.loads(selection.read_text()),
+                             {"model": "inkling-2-mini-gguf-ud-q4-k-xl",
+                              "context": 16384})
 
 
 class CliFixTest(unittest.TestCase):
@@ -114,7 +126,7 @@ class HubCliTest(unittest.TestCase):
         self.assertEqual(register.call_args[0][0]["path"],
                          str(Path(tmp) / "M-Q4_K_M.gguf"))
 
-    def test_get_uses_large_default_context(self):
+    def test_get_uses_hardware_recommended_context(self):
         files = [{"name": "M-Q4_K_M.gguf", "size": 10, "sha256": "a"}]
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(config, "migrate_state", return_value=False), \
@@ -123,10 +135,34 @@ class HubCliTest(unittest.TestCase):
                                return_value=Path(tmp) / "M-Q4_K_M.gguf"), \
              mock.patch.object(hub, "write_manifest"), \
              mock.patch.object(hardware, "preflight", return_value=[]), \
+             mock.patch.object(hardware, "recommended_context",
+                               return_value=49152) as recommended, \
              mock.patch.object(config, "register_model") as register, \
              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(["get", "owner/repo:Q4_K_M"]), 0)
-        self.assertEqual(register.call_args[0][0]["context"], 65536)
+        recommended.assert_called_once()
+        profile = register.call_args[0][0]
+        self.assertEqual(profile["context"], 49152)
+        self.assertTrue(profile["context_auto"])
+
+    def test_get_explicit_context_is_manual(self):
+        files = [{"name": "M-Q4_K_M.gguf", "size": 10, "sha256": "a"}]
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             mock.patch.object(hub, "model_files", return_value=files), \
+             mock.patch.object(hub, "download_file",
+                               return_value=Path(tmp) / "M-Q4_K_M.gguf"), \
+             mock.patch.object(hub, "write_manifest"), \
+             mock.patch.object(hardware, "preflight", return_value=[]), \
+             mock.patch.object(hardware, "recommended_context") as recommended, \
+             mock.patch.object(config, "register_model") as register, \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(
+                cli.main(["get", "owner/repo:Q4_K_M", "--context", "16384"]), 0)
+        recommended.assert_not_called()
+        profile = register.call_args[0][0]
+        self.assertEqual(profile["context"], 16384)
+        self.assertFalse(profile["context_auto"])
 
     def test_get_ambiguous_selector_lists_candidates(self):
         files = [{"name": "A-Q4.gguf", "size": 1, "sha256": "a"},

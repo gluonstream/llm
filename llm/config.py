@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import host
+from . import hardware, host
 
 HOME = Path.home()
 STATE = Path(os.environ.get(
@@ -22,7 +22,7 @@ LSOF = host.find_tool("lsof", "/usr/sbin/lsof")
 SELECTION = STATE / "selected-model.json"
 DEFAULT = "qwen2.5-7b-instruct-q4-k-m"
 # Enough context for agentic clients; Qwen2.5-7B supports 128k.
-DEFAULT_CONTEXT = 65536
+DEFAULT_CONTEXT = hardware.DEFAULT_CONTEXT
 
 BUILTIN_PROFILES = {
     DEFAULT: {
@@ -31,6 +31,7 @@ BUILTIN_PROFILES = {
         "path": str(HOME / ".local" / "share" / "graphify-qwen2.5-7b-instruct"
                     / "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"),
         "context": DEFAULT_CONTEXT,
+        "context_auto": True,
         "sampling": {"temperature": 0, "top_p": 0.95, "min_p": 0.05, "repeat_penalty": 1.0},
     },
     "glm-4.7-flash-ud-q4-k-xl": {
@@ -209,31 +210,65 @@ def selected_profile(selection=None, profiles=None):
     profiles = PROFILES if profiles is None else profiles
     selection = SELECTION if selection is None else selection
     try:
-        name = json.loads(Path(selection).read_text())["model"]
-    except FileNotFoundError:
-        name = DEFAULT
+        record = json.loads(Path(selection).read_text())
+    except (FileNotFoundError, ValueError):
+        record = {}
+    if not isinstance(record, dict):
+        record = {}
+    name = record.get("model", DEFAULT)
     if name not in profiles:
         raise ModelError(
             "Unknown selected model %r; choose one of: %s"
             % (name, ", ".join(sorted(profiles))), candidates=sorted(profiles))
-    return profiles[name]
+    profile = dict(profiles[name])
+    context = record.get("context")
+    if type(context) is int and context > 0:
+        profile["context"] = context
+        profile["context_auto"] = False
+    return profile
 
 
-def select_profile(name, selection=None, profiles=None):
+def select_profile(name, selection=None, profiles=None, context=None):
     profiles = PROFILES if profiles is None else profiles
     selection = SELECTION if selection is None else Path(selection)
     profile = resolve_model(name, profiles=profiles)
+    if context is not None and (type(context) is not int or context <= 0):
+        raise ModelError("Context size must be a positive integer")
+    payload = {"model": profile["id"]}
+    if context is not None:
+        payload["context"] = context
     selection.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", dir=selection.parent, delete=False) as out:
             temporary = Path(out.name)
-            json.dump({"model": profile["id"]}, out)
+            json.dump(payload, out)
         os.replace(temporary, selection)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return profile
+
+
+def model_size(profile):
+    """On-disk size of a profile's model, or 0 when it cannot be read."""
+    path = profile.get("path")
+    if not path:
+        return 0
+    model = Path(path)
+    try:
+        if "-00001-of-" in model.name:
+            return sum(part.stat().st_size for part in model.parent.glob("*.gguf"))
+        return model.stat().st_size
+    except OSError:
+        return 0
+
+
+def effective_context(profile, machine=None):
+    """Context to launch with: manual profiles keep their value, auto ones adapt."""
+    if not profile.get("context_auto"):
+        return profile["context"]
+    return hardware.recommended_context(machine)
 
 
 def cache_directory(profile):
