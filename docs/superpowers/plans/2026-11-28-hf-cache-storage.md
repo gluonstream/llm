@@ -138,7 +138,7 @@ git commit -m "feat: discover GGUF models in the Hugging Face cache"
 **Files:**
 - Modify: `llm/config.py` (built-ins, `DEFAULT_SAMPLING`, `load_profiles`, `reload_profiles`)
 - Modify: `llm/cli.py` (`_local_size`)
-- Modify: `llm/__init__.py`? no
+- Modify: `tests/__init__.py` (set `LMM_NO_CACHE=1` before any `llm` import, so the suite never reads the real cache)
 - Test: `tests/test_config.py`, `tests/test_cli.py`, `tests/test_hfcache.py`
 
 **Interfaces:**
@@ -177,6 +177,8 @@ Run: `python3 -m unittest tests.test_config tests.test_cli -v`
 Expected: assertions fail (built-ins still point at `~/.local/share`).
 
 - [ ] **Step 3: Implement**
+
+`tests/__init__.py`: add `os.environ.setdefault("LMM_NO_CACHE", "1")` so discovery is off for the whole suite unless a test passes `discovered=` explicitly. Tests that exercise discovery call `hfcache.discover(root=tmp)` directly.
 
 `config.py`:
 - `DEFAULT_SAMPLING = {"temperature": 0.7, "top_p": 1.0, "min_p": 0.01, "repeat_penalty": 1.0}`; cli imports it instead of redefining.
