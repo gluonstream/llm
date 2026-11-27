@@ -338,4 +338,30 @@ The design specs and implementation plans live in `docs/superpowers/`:
 
 - `docs/superpowers/specs/` — feature designs.
 - `docs/superpowers/plans/` — implementation plans.
+
+## License
+
+Copyright (C) 2026 Davide Listello <davide.listello@gmail.com>.
+
+This repository contains the free, open-source Python implementation of `llm`.
+It is licensed under the [GNU Affero General Public License, version 3 only
+(AGPL-3.0-only)](LICENSE). You may use, modify, and distribute it under those
+terms.
+
+### Commercial licensing
+
+If you want to use this code in a proprietary product or a hosted/cloud service
+without complying with AGPL-3.0's source-sharing obligations, you need a
+separate written commercial license from the copyright holder. Contact Davide
+Listello at <davide.listello@gmail.com>.
+
+The future Rust implementation is a separate product with its own commercial
+license; it is not part of this repository.
+
+### Contributions
+
+Contributions are welcome. Every contributor must agree to the
+[Contributor License Agreement](CLA.md); this is what lets the project offer
+the same code under both AGPL-3.0 and a commercial license. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 # llm
