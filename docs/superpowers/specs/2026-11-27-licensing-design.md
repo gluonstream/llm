@@ -40,8 +40,8 @@ licenses, including for a future separate Rust product.
 - `CLA.md`: contributor retains copyright and grants the project owner a
   perpetual, worldwide, non-exclusive, royalty-free, irrevocable copyright and
   patent license, including the right to sublicense and distribute under any
-  license. Includes representations and an "as is" disclaimer, and is signed by
-  PR comment.
+  license. Includes a moral-rights waiver/consent to the extent permitted by
+  law, representations, and an "as is" disclaimer, and is signed by PR comment.
 - `CONTRIBUTING.md`: short contribution guide and CLA sign-off instructions.
 - Copyright holder: Davide Listello <davide.listello@gmail.com>.
 - SPDX identifier: `AGPL-3.0-only`.

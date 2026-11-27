@@ -14,8 +14,8 @@ Thanks for your interest in `llm`.
 
 ## Contributor License Agreement
 
-The project is offered under AGPL-3.0 and, separately, a commercial license. To
-keep that possible, every contributor must agree to the
+The project is offered under AGPL-3.0-only and, separately, a commercial
+license. To keep that possible, every contributor must agree to the
 [Contributor License Agreement](CLA.md).
 
 In your first pull request, add a comment with:
@@ -24,6 +24,7 @@ In your first pull request, add a comment with:
 >
 > Name:
 > Employer (if applicable):
+> Employer representative and title (if applicable):
 
 You keep copyright in your contribution; the CLA gives the project owner the
 right to distribute it under both licenses.

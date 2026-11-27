@@ -3,23 +3,33 @@
 This Contributor License Agreement ("CLA") is between you ("Contributor") and
 Davide Listello ("Project Owner") for contributions to the `llm` project.
 
-By submitting a pull request or otherwise contributing to the project, you
-agree to this CLA for your present and future contributions.
+"Contribution" means any original work of authorship, including source code,
+documentation, tests, and other material, that you submit to the project.
+
+You agree to this CLA for your present and future contributions when you sign
+it as described in section 5. Submitting a pull request without signing does
+not by itself grant the licenses below.
 
 ## 1. Copyright license
 
-You retain copyright in your contributions. You grant the Project Owner a
-perpetual, worldwide, non-exclusive, royalty-free, irrevocable copyright
-license to reproduce, prepare derivative works of, publicly display, publicly
-perform, sublicense, and distribute your contributions and derivative works
-under any license, including the GNU Affero General Public License, version 3
-and proprietary or commercial licenses.
+You retain copyright in your contributions. You grant the Project Owner and
+its successors and assigns a perpetual, worldwide, non-exclusive, royalty-free,
+irrevocable copyright license, with the right to sublicense, to reproduce,
+prepare derivative works of, publicly display, publicly perform, and distribute
+your contributions and derivative works under any license, including the GNU
+Affero General Public License, version 3 only (AGPL-3.0-only), and proprietary
+or commercial licenses.
+
+To the extent permitted by applicable law, you waive and agree not to assert
+any moral rights or similar rights in your contributions against the Project
+Owner, its successors and assigns, its sublicensees, or their respective users.
 
 ## 2. Patent license
 
-You grant the Project Owner a perpetual, worldwide, non-exclusive, royalty-free,
-irrevocable patent license to make, have made, use, offer to sell, sell, import,
-and otherwise transfer your contributions. This license applies only to patent
+You grant the Project Owner and its successors and assigns a perpetual,
+worldwide, non-exclusive, royalty-free, irrevocable patent license, with the
+right to sublicense, to make, have made, use, offer to sell, sell, import, and
+otherwise transfer your contributions. This license applies only to patent
 claims licensable by you that are necessarily infringed by your contributions
 alone or by the combination of your contributions with the project. If any
 entity institutes patent litigation alleging that your contribution or the
@@ -51,7 +61,10 @@ To sign this CLA, comment on your pull request with:
 >
 > Name:
 > Employer (if applicable):
+> Employer representative and title (if applicable):
 
 Your pull request can be merged after the Project Owner confirms the CLA
 sign-off. For contributions made on behalf of an employer, an authorized
-representative of the employer must sign.
+representative of the employer must sign by including their name, title, and
+employer in the comment. The Project Owner may require a separate corporate
+CLA.

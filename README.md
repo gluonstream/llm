@@ -362,6 +362,5 @@ license; it is not part of this repository.
 
 Contributions are welcome. Every contributor must agree to the
 [Contributor License Agreement](CLA.md); this is what lets the project offer
-the same code under both AGPL-3.0 and a commercial license. See
+the same code under both AGPL-3.0-only and a commercial license. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
-# llm
