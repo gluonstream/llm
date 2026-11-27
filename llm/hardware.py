@@ -4,10 +4,11 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import render
+from . import host, render
 
 GIB = 1024 ** 3
 DISK_HEADROOM = 512 * 1024 * 1024
@@ -22,6 +23,7 @@ class Hardware:
     gpu: str
     vram: int
     disk_free: int
+    available_ram: int = 0
 
 
 def _run(command, timeout=5):
@@ -60,7 +62,120 @@ def _existing_parent(path):
     return current
 
 
-def detect_hardware(sysctl=None, displays=None, models_dir=None, include_gpu=True):
+def _read_text(path):
+    try:
+        return Path(path).read_text()
+    except OSError:
+        return ""
+
+
+def _parse_meminfo(text):
+    values = {}
+    for line in text.splitlines():
+        key, separator, rest = line.partition(":")
+        if not separator:
+            continue
+        match = re.search(r"(\d+)\s*kB", rest)
+        if match:
+            values[key.strip()] = int(match.group(1)) * 1024
+    return values
+
+
+def _linux_ram():
+    values = _parse_meminfo(_read_text("/proc/meminfo"))
+    return values.get("MemTotal", 0), values.get("MemAvailable", 0)
+
+
+def _linux_cpu():
+    for line in _read_text("/proc/cpuinfo").splitlines():
+        if line.startswith("model name"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _linux_gpu(sysfs_root=None, runner=None):
+    runner = runner or _run
+    output = runner(["nvidia-smi", "--query-gpu=name,memory.total,memory.free",
+                     "--format=csv,noheader,nounits"])
+    for line in (output or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) >= 2:
+            try:
+                return parts[0], int(parts[1]) * 1024 * 1024
+            except ValueError:
+                break
+    largest = None
+    for path in Path(sysfs_root or "/sys/class/drm").glob(
+            "card*/device/mem_info_vram_total"):
+        try:
+            value = int(_read_text(path).strip())
+        except ValueError:
+            continue
+        if largest is None or value > largest:
+            largest = value
+    if largest is not None:
+        return "AMD GPU", largest
+    for line in (runner(["lspci"]) or "").splitlines():
+        if ("VGA compatible controller" in line
+                or "3D controller" in line
+                or "display controller" in line):
+            _, separator, name = line.partition(": ")
+            if separator:
+                return name.strip(), None
+    return None, None
+
+
+def _filesystem_type(path, runner=None):
+    runner = runner or _run
+    output = (runner(["stat", "-f", "-c", "%T", str(path)]) or "").strip()
+    return output or None
+
+
+def _btrfs_free(path, runner=None):
+    runner = runner or _run
+    output = runner(["btrfs", "filesystem", "usage", "-b", str(path)])
+    for line in (output or "").splitlines():
+        match = re.search(r"Free \(estimated\):\s*(\d+)", line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _disk_free(path, runner=None):
+    try:
+        free = shutil.disk_usage(_existing_parent(path)).free
+    except OSError:
+        return None
+    if host.IS_LINUX and _filesystem_type(path, runner) == "btrfs":
+        btrfs_free = _btrfs_free(path, runner)
+        if btrfs_free is not None:
+            return btrfs_free
+    return free
+
+
+def detect_hardware(sysctl=None, displays=None, models_dir=None, include_gpu=True,
+                    platform_name=None, linux_cpu=None, linux_ram=None,
+                    linux_gpu=None):
+    platform_name = platform_name or sys.platform
+    target = models_dir or Path.home()
+    if platform_name.startswith("linux"):
+        cpu = linux_cpu or _linux_cpu
+        ram = linux_ram or _linux_ram
+        gpu_probe = linux_gpu or _linux_gpu
+        try:
+            total_ram, available_ram = ram()
+        except (TypeError, ValueError):
+            total_ram, available_ram = 0, 0
+        chip = cpu() or platform.processor() or "unknown"
+        if include_gpu:
+            gpu, vram = gpu_probe()
+        else:
+            gpu, vram = None, None
+        return Hardware(chip=chip, model=platform.machine() or "unknown",
+                        total_ram=total_ram, unified=False,
+                        gpu=gpu or "unknown", vram=vram,
+                        disk_free=_disk_free(target),
+                        available_ram=available_ram or 0)
     sysctl = sysctl or _sysctl
     displays = displays or _displays
     try:
@@ -82,18 +197,16 @@ def detect_hardware(sysctl=None, displays=None, models_dir=None, include_gpu=Tru
         gpu, vram = None, None
     if not gpu and unified:
         gpu = chip
-    try:
-        disk_free = shutil.disk_usage(_existing_parent(models_dir or Path.home())).free
-    except OSError:
-        disk_free = None
     return Hardware(chip=chip, model=model, total_ram=total_ram, unified=unified,
-                    gpu=gpu or "unknown", vram=vram, disk_free=disk_free)
+                    gpu=gpu or "unknown", vram=vram, disk_free=_disk_free(target),
+                    available_ram=0)
 
 
-def memory_budget(total_ram, unified=True):
+def memory_budget(total_ram, unified=True, available=None):
     if total_ram <= 0:
         return None
-    return int(total_ram * (0.80 if unified else 0.75))
+    base = available if available and available > 0 else total_ram
+    return int(base * (0.80 if unified else 0.75))
 
 
 def estimate_required(model_size, context=8192):
@@ -107,7 +220,8 @@ def preflight(model_size, context=8192, models_dir=None, hardware=None):
     machine = hardware or detect_hardware(models_dir=models_dir, include_gpu=False)
     warnings = []
     required = estimate_required(model_size, context)
-    budget = memory_budget(machine.total_ram, machine.unified)
+    budget = memory_budget(machine.total_ram, machine.unified,
+                           machine.available_ram)
     if budget and required > budget:
         warnings.append(
             "model does not fit: needs ~%s (%s file + %s overhead at %d context), "

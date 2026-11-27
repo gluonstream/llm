@@ -298,8 +298,11 @@ def cmd_doctor(args):
     if brew:
         print("Homebrew:     " + brew)
     machine = hardware.detect_hardware(models_dir=MODELS_DIR)
-    budget = hardware.memory_budget(machine.total_ram, machine.unified)
+    budget = hardware.memory_budget(machine.total_ram, machine.unified,
+                                    machine.available_ram)
     details = "%s, %s RAM" % (machine.chip, render.human_size(machine.total_ram))
+    if machine.available_ram > 0:
+        details += ", %s available" % render.human_size(machine.available_ram)
     if budget:
         details += ", usable ~%s" % render.human_size(budget)
     print("Hardware:     " + details)
