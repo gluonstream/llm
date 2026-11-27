@@ -144,6 +144,14 @@ def plan(legacy_root=None, root=None):
     return entries
 
 
+def _ignored_leftover(path, source):
+    """Known metadata, lock, scratch and Finder files are not model data."""
+    if path.name == ".DS_Store" or path.suffix == ".part":
+        return True
+    return (path.parent == source
+            and path.name in ("download-manifest.json", "download.lock"))
+
+
 def _unrelated_files(source, migrated_paths):
     source = Path(source)
     if not source.is_dir():
@@ -153,7 +161,7 @@ def _unrelated_files(source, migrated_paths):
     for path in sorted(source.rglob("*")):
         if not path.is_file():
             continue
-        if path.name == "download-manifest.json" and path.parent == source:
+        if _ignored_leftover(path, source):
             continue
         if path.resolve() not in covered:
             leftovers.append(path)

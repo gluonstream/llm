@@ -219,11 +219,31 @@ class MigrateTest(unittest.TestCase):
         self.assertTrue(source.exists())
         self.assertFalse(self.cache.exists())
 
+    def test_migrate_ignores_metadata_and_lock_files(self):
+        payload = b"model with metadata"
+        source = self.write(self.legacy / "graphify-model" / "model.gguf",
+                            payload)
+        self.write(self.legacy / "graphify-model" / "download-manifest.json",
+                   b"{}")
+        self.write(self.legacy / "graphify-model" / "download.lock", b"")
+        self.write(self.legacy / "graphify-model" / ".DS_Store", b"finder")
+        self.write(self.legacy / "graphify-model" / "sub" / ".DS_Store",
+                   b"finder")
+        self.write(self.legacy / "graphify-model" / "old.gguf.part", b"partial")
+        entry = self.entry({"model.gguf": payload})
+
+        result = migrate.migrate(entry, root=self.cache)
+
+        self.assertEqual(result["status"], "migrated")
+        self.assertEqual(result["leftover"], [])
+        self.assertFalse(source.exists())
+        self.assertFalse((self.legacy / "graphify-model").exists())
+
     def test_migrate_keeps_old_directory_with_unrelated_files(self):
         payload = b"model"
         source = self.write(self.legacy / "graphify-model" / "model.gguf",
                             payload)
-        notes = self.write(self.legacy / "graphify-model" / "notes.txt", b"hi")
+        notes = self.write(self.legacy / "graphify-model" / "README.txt", b"hi")
         entry = self.entry({"model.gguf": payload})
 
         result = migrate.migrate(entry, root=self.cache)
@@ -232,7 +252,7 @@ class MigrateTest(unittest.TestCase):
         self.assertTrue(source.exists())
         self.assertTrue(notes.exists())
         self.assertEqual([Path(path).name for path in result["leftover"]],
-                         ["notes.txt"])
+                         ["README.txt"])
 
 
 if __name__ == "__main__":
