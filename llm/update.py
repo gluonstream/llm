@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import sys
 
+from . import host
+
 REPO_URL = "https://github.com/gluonstream/llm.git"
 CHECKOUT_NAME = "llm-update"
 
@@ -37,6 +39,9 @@ def _run(command, cwd=None, runner=subprocess.run):
 
 
 def update(checkout=None, repo_url=REPO_URL, runner=subprocess.run):
+    if not (host.IS_MACOS or host.IS_LINUX):
+        raise UpdateError("unsupported OS: %s (supported: macOS, Arch Linux)"
+                          % sys.platform)
     if shutil.which("git") is None:
         raise UpdateError("git not found; install git and retry")
     checkout = Path(checkout).expanduser() if checkout is not None else default_checkout()

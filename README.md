@@ -29,14 +29,30 @@ model:
 
 ## Requirements
 
-- macOS on Apple Silicon. The service uses macOS tools (`ps`, `lsof`,
-  `sysctl`, `system_profiler`).
+- macOS on Apple Silicon, or Arch Linux.
 - Python 3.9 or newer on `PATH` (the CLI uses only the standard library).
-- `llama-server` from Homebrew at `/opt/homebrew/bin/llama-server`:
+- Bash and `git` for `llm update`.
+- `llama-server` from Homebrew on macOS, at `/opt/homebrew/bin/llama-server`:
 
   ```sh
   brew install llama.cpp
   ```
+
+  On Arch, install `llama-server` from an AUR package or build llama.cpp from
+  source. For example:
+
+  ```sh
+  # NVIDIA/CUDA:
+  yay -S llama.cpp-cuda-git
+  # or CPU/other build:
+  # yay -S llama.cpp-git
+  sudo pacman -S lsof pciutils
+  ```
+
+- On Arch, `lsof` is required for safe process and port checks.
+- Optional, for richer hardware reporting: `pciutils` (`lspci`), `nvidia-smi`,
+  and `btrfs-progs` (accurate free space on Btrfs).
+- If `llama-server` is not on `PATH`, set `LMM_LLAMA_SERVER` to its path.
 
 No third-party Python packages are required.
 
@@ -51,7 +67,9 @@ Build the single-file executable and install it into `~/.local/bin`:
 
 - `build.sh` runs the unit test suite, then produces `dist/llm`, a
   self-contained Python zipapp containing compiled bytecode. It still needs
-  `python3` on `PATH`; set `LMM_SKIP_TESTS=1` to skip the tests.
+  `python3` on `PATH`; set `LMM_SKIP_TESTS=1` to skip the tests. On macOS,
+  `build.sh` may also run `brew upgrade llama.cpp`; set
+  `LMM_SKIP_LLAMA_CPP_UPGRADE=1` to skip that upgrade.
 - `install.sh` installs `dist/llm` as `~/.local/bin/llm` and creates the
   `lmm` alias.
 - Set `LMM_BIN_DIR` to install somewhere else:
@@ -69,6 +87,20 @@ export PATH="$HOME/.local/bin:$PATH"
 Both scripts are idempotent and can be re-run at any time. `build.sh` writes
 only to `build/` and `dist/`; `install.sh` replaces only the two command
 names above.
+
+## Updating
+
+```sh
+llm update
+```
+
+`llm update` clones the repository into `/private/tmp/llm-update` on macOS
+(or `/tmp/llm-update` on Arch), pulls the latest `main` if the checkout
+already exists, runs `build.sh`, and installs the new binary with
+`install.sh` into `~/.local/bin` (or `LMM_BIN_DIR`). Set `LMM_UPDATE_DIR` or
+pass `--dir` to use another checkout directory.
+
+From a source checkout, `./update.sh` runs the same flow.
 
 ## Quick start
 
@@ -97,6 +129,7 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 | `llm search <query>` | Search Hugging Face for GGUF models. |
 | `llm get <repo>[:<quant>]` | Download, verify, and register a GGUF model. |
 | `llm doctor` | Check llama.cpp, hardware, models, port, and the last failure. |
+| `llm update [--dir PATH]` | Fetch, build, and install the latest source. |
 | `llm help [command]` | Show help for the CLI or a single command. |
 
 Every command resolves model names by exact id or alias, then by a unique
@@ -194,6 +227,9 @@ Environment variables:
 | `LMM_BUILD_DIR` | `<repo>/build` | Staging directory for `build.sh`. |
 | `LMM_DIST_DIR` | `<repo>/dist` | Output directory for `dist/llm`. |
 | `LMM_SKIP_TESTS` | unset | Set to `1` to skip the test suite during `build.sh`. |
+| `LMM_UPDATE_DIR` | unset | Override the self-update checkout directory. |
+| `LMM_SKIP_LLAMA_CPP_UPGRADE` | unset | Set to `1` to skip the build-time llama.cpp package check. |
+| `LMM_LLAMA_SERVER` | detected | Path to `llama-server`; overrides `PATH` detection. |
 | `HF_TOKEN` | unset | Token for gated Hugging Face repositories. |
 
 ## Where things live
@@ -221,14 +257,17 @@ The CLI is a thin layer over a handful of focused modules:
 llm/
 ├── build.sh                        # build dist/llm (zipapp)
 ├── install.sh                      # install llm + aliases
+├── update.sh                       # fetch, build, and install latest source
 ├── bin/
 │   └── llm                         # source-tree launcher
 ├── llm/
 │   ├── cli.py                      # argparse commands and handlers
 │   ├── config.py                   # paths, profiles, registry, selection
+│   ├── host.py                     # OS and external tool discovery
 │   ├── service.py                  # llama-server lifecycle and health
 │   ├── hub.py                      # Hugging Face search and downloads
 │   ├── hardware.py                 # hardware detection and fit preflight
+│   ├── update.py                   # self-update checkout, build, install
 │   ├── diagnose.py                 # llama.cpp version and failure hints
 │   └── render.py                   # plain-text tables and status output
 ├── tests/                          # unittest suite
@@ -246,11 +285,19 @@ llm/
   unrelated listener on the port, rotates the log, and waits for `/health`.
 - **`hub.py`** talks to the Hugging Face API, selects GGUF files, resumes
   partial downloads, verifies SHA-256, and writes a download manifest.
+- **`host.py`** detects the OS and locates external tools such as `llama-server`
+  and `lsof`, honoring `LMM_LLAMA_SERVER`.
 - **`hardware.py`** detects RAM, unified memory, GPU, and free disk, then
   estimates model-fit before a download.
+- **`update.py`** implements `llm update`: clone or pull a checkout, then run
+  `build.sh` and `install.sh`.
 - **`diagnose.py`** parses `llama-server --version`, Homebrew status, and known
   log failures into actionable messages.
 - **`render.py`** contains the plain-text formatting for tables and status.
+
+On Arch, hardware reporting is best-effort: CPU and RAM are reliable; AMD and
+NVIDIA VRAM are read from sysfs or `nvidia-smi`; Intel integrated GPUs report
+shared system RAM.
 
 The lifecycle is straightforward: `llm use` (or `select`) writes
 `selected-model.json`; `llm start` builds the `llama-server` argument list from
@@ -314,10 +361,15 @@ llm logs -n 100
 ```
 
 - **`unknown model architecture`** — the installed llama.cpp is too old. For
-  example, Inkling 2 (`inkling2_loop`) requires llama.cpp >= 1.1.0:
+  example, Inkling 2 (`inkling2_loop`) requires llama.cpp >= 1.1.0. Upgrade it
+  for your platform:
 
   ```sh
+  # macOS (Homebrew)
   brew upgrade llama.cpp
+
+  # Arch: update the AUR package, or rebuild llama.cpp from source
+  yay -S llama.cpp-cuda-git
   ```
 
 - **Inkling 2 returns empty content with a very small `max_tokens`** — it

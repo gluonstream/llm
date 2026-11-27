@@ -24,6 +24,16 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual(update.temp_root("darwin"), Path("/private/tmp"))
         self.assertEqual(update.temp_root("linux"), Path("/tmp"))
 
+    def test_update_rejects_unsupported_os_before_any_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = FakeRunner()
+            with mock.patch.object(update.host, "IS_MACOS", False), \
+                 mock.patch.object(update.host, "IS_LINUX", False):
+                with self.assertRaises(update.UpdateError) as caught:
+                    update.update(checkout=Path(tmp) / "llm-update", runner=runner)
+        self.assertIn("unsupported OS", str(caught.exception))
+        self.assertEqual(runner.calls, [])
+
     def test_default_checkout_honors_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "custom"
