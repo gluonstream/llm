@@ -21,6 +21,8 @@ PS = host.find_tool("ps", "/bin/ps")
 LSOF = host.find_tool("lsof", "/usr/sbin/lsof")
 SELECTION = STATE / "selected-model.json"
 DEFAULT = "qwen2.5-7b-instruct-q4-k-m"
+# Enough context for agentic clients; Qwen2.5-7B supports 128k.
+DEFAULT_CONTEXT = 65536
 
 BUILTIN_PROFILES = {
     DEFAULT: {
@@ -28,7 +30,7 @@ BUILTIN_PROFILES = {
         "alias": "qwen2.5-7b-instruct-graphify",
         "path": str(HOME / ".local" / "share" / "graphify-qwen2.5-7b-instruct"
                     / "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"),
-        "context": 8192,
+        "context": DEFAULT_CONTEXT,
         "sampling": {"temperature": 0, "top_p": 0.95, "min_p": 0.05, "repeat_penalty": 1.0},
     },
     "glm-4.7-flash-ud-q4-k-xl": {
@@ -86,6 +88,7 @@ def load_user_profiles(path=None):
             continue
         profile = dict(profile)
         profile.setdefault("id", model_id)
+        profile.setdefault("context", DEFAULT_CONTEXT)
         try:
             validate_profile(profile)
         except ModelError:

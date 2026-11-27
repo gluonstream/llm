@@ -233,7 +233,8 @@ def cmd_get(args):
     size_text = render.human_size(chosen["size"]) if chosen["size"] else "unknown size"
     if not existing or args.force:
         context = (args.context if args.context is not None
-                   else (existing.get("context") if existing else 8192))
+                   else (existing.get("context") if existing
+                         else config.DEFAULT_CONTEXT))
         warnings = hardware.preflight(
             chosen["size"], context, models_dir=MODELS_DIR)
         if warnings:
@@ -279,7 +280,7 @@ def cmd_get(args):
             "path": str(path),
             "directory": str(destination),
             "filename": chosen["name"],
-            "context": args.context or 8192,
+            "context": args.context or config.DEFAULT_CONTEXT,
             "sampling": dict(DEFAULT_SAMPLING),
         }
     if args.requires_llama_cpp:

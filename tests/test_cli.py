@@ -114,6 +114,20 @@ class HubCliTest(unittest.TestCase):
         self.assertEqual(register.call_args[0][0]["path"],
                          str(Path(tmp) / "M-Q4_K_M.gguf"))
 
+    def test_get_uses_large_default_context(self):
+        files = [{"name": "M-Q4_K_M.gguf", "size": 10, "sha256": "a"}]
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             mock.patch.object(hub, "model_files", return_value=files), \
+             mock.patch.object(hub, "download_file",
+                               return_value=Path(tmp) / "M-Q4_K_M.gguf"), \
+             mock.patch.object(hub, "write_manifest"), \
+             mock.patch.object(hardware, "preflight", return_value=[]), \
+             mock.patch.object(config, "register_model") as register, \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["get", "owner/repo:Q4_K_M"]), 0)
+        self.assertEqual(register.call_args[0][0]["context"], 65536)
+
     def test_get_ambiguous_selector_lists_candidates(self):
         files = [{"name": "A-Q4.gguf", "size": 1, "sha256": "a"},
                  {"name": "A-Q5.gguf", "size": 2, "sha256": "b"}]

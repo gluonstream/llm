@@ -133,3 +133,20 @@ class RegistryTest(unittest.TestCase):
 
     def test_normalize_alias_slugs(self):
         self.assertEqual(config.normalize_alias("My Model!"), "my-model")
+
+
+class DefaultContextTest(unittest.TestCase):
+    def test_builtin_qwen_uses_large_default_context(self):
+        self.assertEqual(
+            config.BUILTIN_PROFILES[config.DEFAULT]["context"], 65536)
+
+    def test_user_profile_without_context_uses_large_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            profile = {"id": "mine", "alias": "mine", "path": "/tmp/mine.gguf",
+                       "sampling": {"temperature": 0.7, "top_p": 1.0,
+                                    "min_p": 0.01, "repeat_penalty": 1.0}}
+            registry.write_text(json.dumps({"mine": profile}))
+            merged = config.load_profiles(path=registry)
+            self.assertIn("mine", merged)
+            self.assertEqual(merged["mine"]["context"], 65536)
