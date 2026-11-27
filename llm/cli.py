@@ -5,7 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import config, diagnose, hardware, hfcache, host, hub, render, service, update
+from . import (config, diagnose, hardware, hfcache, host, hub, migrate, render,
+               service, update)
 
 _subparsers = {}
 MODELS_DIR = Path.home() / ".local" / "share" / "llm" / "models"
@@ -294,6 +295,57 @@ def cmd_get(args):
     return 0
 
 
+def cmd_migrate_cache(args):
+    entries = migrate.plan()
+    if not entries:
+        print("No legacy model directories found.")
+        return 0
+
+    errors = 0
+    migrated = 0
+    already = 0
+    missing = 0
+    for entry in entries:
+        heading = "%s \u2192 %s @ %s" % (
+            entry["source"], entry["repo"], entry["commit"])
+        if entry.get("status") == "missing":
+            print(heading)
+            print("  missing      %d file(s) not found" % len(entry["files"]))
+            missing += 1
+            continue
+        result = migrate.migrate(entry, dry_run=args.dry_run,
+                                 verify=args.verify, keep_old=args.keep_old)
+        print(heading)
+        for item in result["files"]:
+            print("  %-13s %s" % (item["status"], item["filename"]))
+        if result["status"] == "error":
+            errors += 1
+            for item in result["files"]:
+                if item.get("message"):
+                    print("  error: " + item["message"], file=sys.stderr)
+        elif result["status"] in ("dry-run", "migrated"):
+            migrated += 1
+        elif result["status"] == "already present":
+            already += 1
+        else:
+            missing += 1
+        if result["leftover"]:
+            print("  kept old directory; %d unrelated file(s) remain"
+                  % len(result["leftover"]))
+
+    print()
+    if args.dry_run:
+        print("Dry run: %d model(s) would migrate, %d already present, "
+              "%d missing." % (migrated, already, missing))
+    else:
+        print("Migrated %d model(s); %d already present; %d missing."
+              % (migrated, already, missing))
+    if errors:
+        print("%d error(s)." % errors, file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_doctor(args):
     version = diagnose.llama_server_version(config.LLAMA_SERVER)
     print("llama-server: %s" % (version["raw"] or "not found at " + config.LLAMA_SERVER))
@@ -447,6 +499,14 @@ def build_parser(prog=None):
     command.add_argument("--dir", help="checkout directory")
     add("version", cmd_version, "show the installed version and whether it is current")
     add("doctor", cmd_doctor, "check llama.cpp, models, port and last failure")
+    command = add("migrate-cache", cmd_migrate_cache,
+                  "move legacy model files into the Hugging Face cache")
+    command.add_argument("--dry-run", action="store_true",
+                         help="show the plan without changing anything")
+    command.add_argument("--verify", action="store_true",
+                         help="hash files before and after migrating")
+    command.add_argument("--keep-old", action="store_true",
+                         help="keep the old model directories")
     command = add("help", cmd_help, "show this help or help for one command")
     command.add_argument("topic", nargs="?")
 

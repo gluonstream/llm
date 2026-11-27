@@ -244,6 +244,65 @@ class HubCliTest(unittest.TestCase):
         preflight.assert_not_called()
 
 
+class MigrateCacheCliTest(unittest.TestCase):
+    def test_migrate_cache_dry_run_prints_table(self):
+        entry = {
+            "source": "/tmp/graphify-qwen",
+            "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+            "commit": "b" * 40,
+            "revision": "main",
+            "origin": "known",
+            "status": "ready",
+            "files": [{"filename": "qwen.gguf", "sha256": "a" * 64,
+                       "size": 10, "path": "/tmp/graphify-qwen/qwen.gguf",
+                       "present": True}],
+        }
+        result = {
+            "source": entry["source"],
+            "repo": entry["repo"],
+            "commit": entry["commit"],
+            "status": "dry-run",
+            "files": [{"filename": "qwen.gguf", "status": "would migrate",
+                       "method": None, "message": ""}],
+            "leftover": [],
+        }
+        buffer = io.StringIO()
+        with mock.patch.object(config, "migrate_state", return_value=False), \
+             mock.patch.object(cli.migrate, "plan", return_value=[entry]), \
+             mock.patch.object(cli.migrate, "migrate",
+                               return_value=result) as applied, \
+             redirect_stdout(buffer):
+            self.assertEqual(cli.main(["migrate-cache", "--dry-run"]), 0)
+        text = buffer.getvalue()
+        for value in ("Qwen/Qwen2.5-7B-Instruct-GGUF", "b" * 40,
+                      "/tmp/graphify-qwen", "qwen.gguf"):
+            self.assertIn(value, text)
+        self.assertTrue(applied.call_args.kwargs["dry_run"])
+
+    def test_migrate_cache_reports_missing(self):
+        entry = {
+            "source": "/tmp/graphify-gone",
+            "repo": "org/gone",
+            "commit": "c" * 40,
+            "revision": "main",
+            "origin": "known",
+            "status": "missing",
+            "files": [{"filename": "gone.gguf", "sha256": "a" * 64,
+                       "size": 10, "path": "/tmp/graphify-gone/gone.gguf",
+                       "present": False}],
+        }
+        buffer = io.StringIO()
+        with mock.patch.object(config, "migrate_state", return_value=False), \
+             mock.patch.object(cli.migrate, "plan", return_value=[entry]), \
+             mock.patch.object(cli.migrate, "migrate") as applied, \
+             redirect_stdout(buffer):
+            self.assertEqual(cli.main(["migrate-cache"]), 0)
+        text = buffer.getvalue()
+        self.assertIn("org/gone", text)
+        self.assertIn("missing", text)
+        applied.assert_not_called()
+
+
 class VersionCliTest(unittest.TestCase):
     def _output(self, argv):
         buffer = io.StringIO()
