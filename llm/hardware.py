@@ -7,8 +7,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
-from . import host, render
+from . import gguf, host, render
 
 GIB = 1024 ** 3
 DISK_HEADROOM = 512 * 1024 * 1024
@@ -24,6 +25,16 @@ class Hardware:
     vram: int
     disk_free: int
     available_ram: int = 0
+
+
+@dataclass
+class ContextChoice:
+    context: int
+    reason: str
+    required: Optional[int]
+    budget: Optional[int]
+    approximate: bool
+    native: Optional[int]
 
 
 def _run(command, timeout=5):
@@ -209,9 +220,51 @@ def memory_budget(total_ram, unified=True, available=None):
     return int(base * (0.80 if unified else 0.75))
 
 
-def estimate_required(model_size, context=8192):
+def context_budget(machine):
+    """Return the capacity budget for model weights plus KV cache, or None."""
+    if machine.unified:
+        return memory_budget(machine.total_ram, True, machine.available_ram)
+    if machine.vram:
+        return int(machine.vram * 0.90)
+    return memory_budget(machine.total_ram, False, machine.available_ram)
+
+
+def estimate_required(model_size, context=8192, metadata=None):
+    if metadata:
+        kv_bytes = gguf.kv_cache_bytes(metadata, context)
+        if kv_bytes is not None:
+            overhead = max(GIB, int(model_size * 0.05)) + 256 * 1024 * 1024
+            return model_size + kv_bytes + overhead
     overhead = 2 * GIB + int((max(context, 1) / 8192.0) * 1.5 * GIB)
     return model_size + overhead
+
+
+def choose_context(model_size, current, machine, metadata=None,
+                   candidates=(131072, 65536), ceiling=None):
+    approximate = metadata is None
+    native = gguf.native_context(metadata) if metadata else None
+    budget = context_budget(machine)
+    if budget is None:
+        return ContextChoice(current, "memory budget unknown", None, None,
+                             approximate, native)
+    values = [current] + [value for value in candidates if value != current]
+    values.sort(reverse=True)
+    capped_current = ceiling is not None and current > ceiling
+    if ceiling is not None:
+        values = [value for value in values if value <= ceiling]
+    for value in values:
+        required = estimate_required(model_size, value, metadata)
+        if required <= budget:
+            reason = "fits (approximate)" if approximate else "fits"
+            return ContextChoice(value, reason, required, budget, approximate,
+                                 native)
+    required = estimate_required(model_size, current, metadata)
+    if capped_current:
+        reason = "no candidate <= ceiling fits; keeping current"
+    else:
+        reason = "no candidate fits (needs ~%s, budget ~%s)" % (
+            render.human_size(required), render.human_size(budget))
+    return ContextChoice(current, reason, required, budget, approximate, native)
 
 
 def preflight(model_size, context=8192, models_dir=None, hardware=None):

@@ -3,7 +3,28 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from llm import hardware
+from llm import gguf, hardware
+
+
+def model_metadata(**overrides):
+    """Metadata whose KV cache is exactly 1 GiB at an 8192 context."""
+    metadata = {
+        "general.architecture": "test",
+        "test.block_count": 32,
+        "test.embedding_length": 2048,
+        "test.attention.head_count": 32,
+        "test.attention.head_count_kv": 16,
+        "test.context_length": 32768,
+    }
+    metadata.update(overrides)
+    return metadata
+
+
+def machine(total_ram, unified=True, vram=None):
+    return hardware.Hardware(chip="test", model="test", total_ram=total_ram,
+                             unified=unified, gpu="test", vram=vram,
+                             disk_free=0)
+
 
 class HardwareTest(unittest.TestCase):
     def test_budget_and_estimate(self):
@@ -149,3 +170,67 @@ class HardwareTest(unittest.TestCase):
              mock.patch.object(hardware.shutil, "disk_usage") as usage:
             usage.return_value.free = 999
             self.assertEqual(hardware._disk_free("/"), 123)
+
+    def test_context_budget_unified(self):
+        machine_under_test = machine(36 * hardware.GIB, unified=True, vram=None)
+        self.assertEqual(hardware.context_budget(machine_under_test),
+                         int(36 * hardware.GIB * 0.80))
+
+    def test_context_budget_discrete_uses_total_vram(self):
+        machine_under_test = machine(64 * hardware.GIB, unified=False,
+                                     vram=24 * hardware.GIB)
+        self.assertEqual(hardware.context_budget(machine_under_test),
+                         int(24 * hardware.GIB * 0.90))
+
+    def test_estimate_required_with_metadata_uses_kv(self):
+        metadata = model_metadata()
+        self.assertEqual(gguf.kv_cache_bytes(metadata, 8192), hardware.GIB)
+        self.assertEqual(
+            hardware.estimate_required(4 * hardware.GIB, 8192, metadata),
+            4 * hardware.GIB + hardware.GIB + hardware.GIB + 256 * 1024 * 1024)
+
+    def test_choose_context_prefers_128k_when_it_fits(self):
+        choice = hardware.choose_context(4 * hardware.GIB, 8192,
+                                         machine(36 * hardware.GIB),
+                                         model_metadata())
+        self.assertEqual(choice.context, 131072)
+        self.assertEqual(choice.reason, "fits")
+        self.assertEqual(choice.budget, int(36 * hardware.GIB * 0.80))
+        self.assertEqual(choice.required,
+                         4 * hardware.GIB + 16 * hardware.GIB + hardware.GIB
+                         + 256 * 1024 * 1024)
+        self.assertFalse(choice.approximate)
+
+    def test_choose_context_falls_back_to_64k(self):
+        choice = hardware.choose_context(4 * hardware.GIB, 8192,
+                                         machine(20 * hardware.GIB),
+                                         model_metadata())
+        self.assertEqual(choice.context, 65536)
+        self.assertEqual(choice.reason, "fits")
+
+    def test_choose_context_keeps_current_when_none_fit(self):
+        choice = hardware.choose_context(4 * hardware.GIB, 32768,
+                                         machine(8 * hardware.GIB),
+                                         model_metadata())
+        self.assertEqual(choice.context, 32768)
+        self.assertIn("no candidate fits", choice.reason)
+
+    def test_choose_context_ceiling_caps_candidates(self):
+        choice = hardware.choose_context(4 * hardware.GIB, 8192,
+                                         machine(36 * hardware.GIB),
+                                         model_metadata(), ceiling=65536)
+        self.assertEqual(choice.context, 65536)
+        self.assertNotEqual(choice.context, 131072)
+
+    def test_choose_context_marks_approximate_without_metadata(self):
+        choice = hardware.choose_context(4 * hardware.GIB, 8192,
+                                         machine(36 * hardware.GIB), None)
+        self.assertTrue(choice.approximate)
+        self.assertIsNone(choice.native)
+        self.assertIn("approximate", choice.reason)
+
+    def test_choose_context_reports_native_window(self):
+        choice = hardware.choose_context(4 * hardware.GIB, 8192,
+                                         machine(36 * hardware.GIB),
+                                         model_metadata())
+        self.assertEqual(choice.native, 32768)
