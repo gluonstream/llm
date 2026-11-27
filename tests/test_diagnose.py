@@ -1,5 +1,10 @@
+import os
 import unittest
 from unittest import mock
+
+# Set before importing llm: `discover -s tests` imports modules top-level and
+# does not run tests/__init__.py.
+os.environ.setdefault("LMM_NO_CACHE", "1")
 
 from llm import diagnose
 

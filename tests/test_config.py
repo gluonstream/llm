@@ -1,9 +1,32 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+# Set before importing llm: `discover -s tests` imports modules top-level and
+# does not run tests/__init__.py.
+os.environ.setdefault("LMM_NO_CACHE", "1")
 
 from llm import config
+
+COMMIT = "a" * 40
+
+
+def cache_snapshot(root, repo, filename, commit=COMMIT):
+    directory = root / ("models--" + repo.replace("/", "--"))
+    (directory / "refs").mkdir(parents=True, exist_ok=True)
+    (directory / "refs" / "main").write_text(commit)
+    snapshot = directory / "snapshots" / commit / filename
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_bytes(b"x")
+    return snapshot
+
+
+def profile(model_id, alias, path="/tmp/model.gguf"):
+    return {"id": model_id, "alias": alias, "path": path,
+            "context": 8192, "sampling": {}}
 
 class ResolveModelTest(unittest.TestCase):
     def test_exact_alias_and_prefix_resolve(self):
@@ -133,3 +156,90 @@ class RegistryTest(unittest.TestCase):
 
     def test_normalize_alias_slugs(self):
         self.assertEqual(config.normalize_alias("My Model!"), "my-model")
+
+
+class CacheProfileTest(unittest.TestCase):
+    def _empty_registry(self, tmp):
+        return Path(tmp) / "models.json"
+
+    def test_builtin_profiles_resolve_from_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = cache_snapshot(
+                root, "Qwen/Qwen2.5-7B-Instruct-GGUF",
+                "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf")
+            with mock.patch.object(config, "HF_CACHE", root):
+                merged = config.load_profiles(
+                    path=self._empty_registry(tmp), discovered={})
+            self.assertEqual(merged[config.DEFAULT]["path"], str(snapshot))
+
+    def test_missing_builtin_keeps_expected_snapshot_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = config.BUILTIN_PROFILES[config.DEFAULT]
+            expected = (root / "models--Qwen--Qwen2.5-7B-Instruct-GGUF"
+                        / "snapshots" / "main" / builtin["filename"])
+            with mock.patch.object(config, "HF_CACHE", root):
+                merged = config.load_profiles(
+                    path=self._empty_registry(tmp), discovered={})
+            self.assertEqual(merged[config.DEFAULT]["path"], str(expected))
+
+    def test_load_profiles_merges_discovered_before_user_models(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = self._empty_registry(tmp)
+            discovered = {
+                "qwen2.5-coder-keep": profile(
+                    "qwen2.5-coder-keep", "qwen2.5-coder-keep"),
+                "qwen2.5-coder-lose": profile(
+                    "qwen2.5-coder-lose", "shared-alias"),
+            }
+            registry.write_text(json.dumps({
+                "mine": profile("mine", "shared-alias"),
+            }))
+            merged = config.load_profiles(
+                path=registry, discovered=discovered)
+            self.assertIn("qwen2.5-coder-keep", merged)
+            self.assertNotIn("qwen2.5-coder-lose", merged)
+            self.assertIn("mine", merged)
+            self.assertEqual(merged["mine"]["alias"], "shared-alias")
+
+    def test_user_id_replaces_discovered_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = self._empty_registry(tmp)
+            discovered = {"mine": profile("mine", "from-cache",
+                                          path="/tmp/cache.gguf")}
+            registry.write_text(json.dumps({
+                "mine": profile("mine", "from-user", path="/tmp/user.gguf"),
+            }))
+            merged = config.load_profiles(
+                path=registry, discovered=discovered)
+            self.assertEqual(merged["mine"]["path"], "/tmp/user.gguf")
+
+    def test_discovered_does_not_shadow_builtin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = self._empty_registry(tmp)
+            alias = config.BUILTIN_PROFILES[config.DEFAULT]["alias"]
+            discovered = {
+                "by-alias": profile("by-alias", alias),
+                config.DEFAULT: profile(config.DEFAULT, "other-alias"),
+            }
+            merged = config.load_profiles(
+                path=registry, discovered=discovered)
+            self.assertNotIn("by-alias", merged)
+            self.assertEqual(merged[config.DEFAULT]["alias"], alias)
+
+    def test_lmm_no_cache_disables_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_snapshot(root, "org/coder", "coder-Q4_K_M.gguf")
+            registry = self._empty_registry(tmp)
+            with mock.patch.object(config, "HF_CACHE", root):
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("LMM_NO_CACHE", None)
+                    enabled = config.load_profiles(path=registry)
+                with mock.patch.dict(os.environ, {"LMM_NO_CACHE": "1"}):
+                    disabled = config.load_profiles(path=registry)
+            self.assertTrue(any(item.get("source") == "cache"
+                                for item in enabled.values()))
+            self.assertFalse(any(item.get("source") == "cache"
+                                 for item in disabled.values()))

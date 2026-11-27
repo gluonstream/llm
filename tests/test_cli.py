@@ -1,11 +1,16 @@
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
+
+# Set before importing llm: `discover -s tests` imports modules top-level and
+# does not run tests/__init__.py.
+os.environ.setdefault("LMM_NO_CACHE", "1")
 
 from llm import cli, config, hardware, hub, service
 
@@ -62,6 +67,18 @@ class CliFixTest(unittest.TestCase):
             path = Path(tmp) / "model.gguf"
             path.touch()
             self.assertIsNone(cli._local_size({"path": str(path)}))
+
+    def test_local_size_sums_only_the_shard_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            first = directory / "model-Q4_K_M-00001-of-00002.gguf"
+            second = directory / "model-Q4_K_M-00002-of-00002.gguf"
+            other = directory / "model-Q8_0.gguf"
+            first.write_bytes(b"x" * 10)
+            second.write_bytes(b"x" * 20)
+            other.write_bytes(b"x" * 100)
+            self.assertEqual(
+                cli._local_size({"path": str(first)}), 30)
 
     def test_select_stops_running_service_when_switching(self):
         with tempfile.TemporaryDirectory() as tmp:

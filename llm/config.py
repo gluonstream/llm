@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import host
+from . import hfcache, host
 
 HOME = Path.home()
 STATE = Path(os.environ.get(
@@ -22,31 +22,37 @@ LSOF = host.find_tool("lsof", "/usr/sbin/lsof")
 SELECTION = STATE / "selected-model.json"
 DEFAULT = "qwen2.5-7b-instruct-q4-k-m"
 
+DEFAULT_SAMPLING = {"temperature": 0.7, "top_p": 1.0, "min_p": 0.01, "repeat_penalty": 1.0}
+
+HF_CACHE = hfcache.cache_root()
+
 BUILTIN_PROFILES = {
     DEFAULT: {
         "id": DEFAULT,
         "alias": "qwen2.5-7b-instruct-graphify",
-        "path": str(HOME / ".local" / "share" / "graphify-qwen2.5-7b-instruct"
-                    / "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"),
+        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "filename": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+        "revision": "main",
         "context": 8192,
         "sampling": {"temperature": 0, "top_p": 0.95, "min_p": 0.05, "repeat_penalty": 1.0},
     },
     "glm-4.7-flash-ud-q4-k-xl": {
         "id": "glm-4.7-flash-ud-q4-k-xl",
         "alias": "glm-4.7-flash",
-        "hf": "unsloth/GLM-4.7-Flash-GGUF:UD-Q4_K_XL",
-        "path": str(HOME / ".local" / "share" / "graphify-glm-4.7-flash"
-                    / "GLM-4.7-Flash-UD-Q4_K_XL.gguf"),
+        "repo": "unsloth/GLM-4.7-Flash-GGUF",
+        "filename": "GLM-4.7-Flash-UD-Q4_K_XL.gguf",
+        "revision": "0d32489ecb9db6d2a4fc93bd27ef01519f95474d",
         "context": 32768,
-        "sampling": {"temperature": 0.7, "top_p": 1.0, "min_p": 0.01, "repeat_penalty": 1.0},
+        "sampling": dict(DEFAULT_SAMPLING),
     },
     "inkling-2-mini-gguf-ud-q4-k-xl": {
         "id": "inkling-2-mini-gguf-ud-q4-k-xl",
         "alias": "inkling-2-mini",
-        "path": str(HOME / ".local" / "share" / "graphify-inkling-2-mini"
-                    / "Inkling-2-Mini-UD-Q4_K_XL.gguf"),
+        "repo": "unsloth/Inkling-2-Mini-GGUF",
+        "filename": "Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        "revision": "main",
         "context": 8192,
-        "sampling": {"temperature": 0.7, "top_p": 1.0, "min_p": 0.01, "repeat_penalty": 1.0},
+        "sampling": dict(DEFAULT_SAMPLING),
         "min_llama_cpp": "1.1.0",
     },
 }
@@ -94,22 +100,76 @@ def load_user_profiles(path=None):
     return profiles
 
 
-def load_profiles(path=None, builtin=None):
+def _alias(profile):
+    return str(profile.get("alias") or "").strip().lower()
+
+
+def _resolve_builtin(profile):
+    """Point a built-in at its cache snapshot, or at where it would live."""
+    profile = dict(profile)
+    repo = profile.get("repo")
+    filename = profile.get("filename")
+    revision = profile.get("revision")
+    if not (repo and filename and revision):
+        return profile
+    resolved = hfcache.resolve_snapshot(repo, filename, revision, root=HF_CACHE)
+    if resolved is None:
+        resolved = hfcache.expected_snapshot(repo, filename, revision,
+                                             root=HF_CACHE)
+    profile["path"] = str(resolved)
+    return profile
+
+
+def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
     source = BUILTIN_PROFILES if builtin is None else builtin
-    merged = {model_id: dict(profile) for model_id, profile in source.items()}
-    aliases = {str(profile.get("alias") or "").strip().lower()
-               for profile in merged.values()}
-    aliases.discard("")
-    for model_id, profile in load_user_profiles(path).items():
-        if model_id in merged:
+    merged = {model_id: _resolve_builtin(profile)
+              for model_id, profile in source.items()}
+    builtin_ids = set(merged)
+    aliases = {}
+    for model_id, profile in merged.items():
+        alias = _alias(profile)
+        if alias:
+            aliases[alias] = model_id
+
+    if discovered is None and not os.environ.get("LMM_NO_CACHE"):
+        discovered = hfcache.discover(root=HF_CACHE, sampling=DEFAULT_SAMPLING)
+    for model_id, profile in (discovered or {}).items():
+        if not isinstance(profile, dict) or model_id in merged:
             continue
-        alias = str(profile.get("alias") or "").strip().lower()
+        alias = _alias(profile)
         if alias and alias in aliases:
             continue
-        merged[model_id] = profile
+        merged[model_id] = dict(profile)
         if alias:
-            aliases.add(alias)
+            aliases[alias] = model_id
+
+    user_ids = set()
+    for model_id, profile in load_user_profiles(path).items():
+        if model_id in builtin_ids:
+            continue
+        alias = _alias(profile)
+        if model_id in merged:
+            previous = aliases.get(_alias(merged[model_id]))
+            if previous == model_id:
+                del aliases[_alias(merged[model_id])]
+        if alias and alias in aliases:
+            owner = aliases[alias]
+            if owner in builtin_ids or owner in user_ids:
+                continue
+            merged.pop(owner, None)
+            del aliases[alias]
+        merged[model_id] = profile
+        user_ids.add(model_id)
+        if alias:
+            aliases[alias] = model_id
     return merged
+
+
+def reload_profiles(path=None, builtin=None, warnings=None, discovered=None):
+    global PROFILES
+    PROFILES = load_profiles(path=path, builtin=builtin, warnings=warnings,
+                             discovered=discovered)
+    return PROFILES
 
 
 PROFILES = load_profiles()

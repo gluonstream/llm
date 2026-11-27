@@ -5,11 +5,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import config, diagnose, hardware, host, hub, render, service, update
+from . import config, diagnose, hardware, hfcache, host, hub, render, service, update
 
 _subparsers = {}
 MODELS_DIR = Path.home() / ".local" / "share" / "llm" / "models"
-DEFAULT_SAMPLING = {"temperature": 0.7, "top_p": 1.0, "min_p": 0.01, "repeat_penalty": 1.0}
 
 
 def _local_size(profile):
@@ -17,10 +16,14 @@ def _local_size(profile):
     if not path:
         return None
     model = Path(path)
+    parts = (hfcache.split_set(model.name)
+             or hfcache.split_set(profile.get("filename") or ""))
     try:
-        if "-00001-of-" in model.name:
-            total = sum(part.stat().st_size for part in model.parent.glob("*.gguf"))
-            return total if total > 0 else None
+        if parts is not None:
+            stem, _index, total = parts
+            shards = model.parent.glob("%s-*-of-%05d.gguf" % (stem, total))
+            size = sum(shard.stat().st_size for shard in shards)
+            return size if size > 0 else None
         size = model.stat().st_size
         return size if size > 0 else None
     except OSError:
@@ -280,7 +283,7 @@ def cmd_get(args):
             "directory": str(destination),
             "filename": chosen["name"],
             "context": args.context or 8192,
-            "sampling": dict(DEFAULT_SAMPLING),
+            "sampling": dict(config.DEFAULT_SAMPLING),
         }
     if args.requires_llama_cpp:
         profile["min_llama_cpp"] = args.requires_llama_cpp
