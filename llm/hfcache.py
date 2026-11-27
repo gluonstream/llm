@@ -188,7 +188,7 @@ def profile_for(repo, revision, group, root=None, sampling=None) -> dict:
     stem = entry.stem
     if group.get("split"):
         stem = SPLIT_SUFFIX_RE.sub("", stem)
-    model_id = _slug(repo + "-" + str(relative.with_suffix("")))
+    model_id = _slug(repo + "-" + stem)
     return {
         "id": model_id,
         "alias": _slug(stem),

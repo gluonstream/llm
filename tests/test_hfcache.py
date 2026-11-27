@@ -161,9 +161,8 @@ class HFCacheTest(unittest.TestCase):
         self.assertEqual(len(first), 1)
         profile = list(first.values())[0]
         self.assertEqual(profile["alias"], "split-model")
-        self.assertEqual(
-            profile["id"],
-            "org-model-repo-q4-split-model-00001-of-00002")
+        self.assertEqual(profile["id"], "org-model-repo-split-model")
+        self.assertNotIn("-00001-of-00002", profile["id"])
         self.assertEqual(profile["filename"],
                          "q4/Split.Model-00001-of-00002.gguf")
         self.assertTrue(profile["path"].endswith(
@@ -196,7 +195,7 @@ class HFCacheTest(unittest.TestCase):
         group = hfcache.group_ggufs([path])[0]
 
         profile = hfcache.profile_for(repo, "main", group, root=self.root)
-        self.assertEqual(profile["id"], "org-model-q4-file")
+        self.assertEqual(profile["id"], "org-model-file")
         self.assertEqual(profile["alias"], "file")
         self.assertEqual(profile["repo"], repo)
         self.assertEqual(profile["filename"], "q4/file.gguf")
@@ -212,6 +211,24 @@ class HFCacheTest(unittest.TestCase):
         custom = hfcache.profile_for(repo, "main", group, root=self.root,
                                      sampling={"temperature": 0})
         self.assertEqual(custom["sampling"], {"temperature": 0})
+
+    def test_profile_ids_use_shard_free_stem(self):
+        repo = "org/repo"
+        snapshot = self.snapshot(repo)
+        one = self.write(snapshot / "x-00001-of-00002.gguf", b"a")
+        two = self.write(snapshot / "x-00002-of-00002.gguf", b"b")
+        split_group = hfcache.group_ggufs([one, two])[0]
+        split = hfcache.profile_for(repo, "main", split_group,
+                                    root=self.root)
+        self.assertEqual(split["id"], "org-repo-x")
+        self.assertEqual(split["alias"], "x")
+        self.assertNotIn("-00001-of-00002", split["id"])
+
+        plain_path = self.write(snapshot / "plain.gguf", b"c")
+        plain_group = hfcache.group_ggufs([plain_path])[0]
+        plain = hfcache.profile_for(repo, "main", plain_group, root=self.root)
+        self.assertEqual(plain["id"], "org-repo-plain")
+        self.assertEqual(plain["alias"], "plain")
 
     def test_resolve_snapshot_prefers_expected_then_newest(self):
         repo = "org/model"
