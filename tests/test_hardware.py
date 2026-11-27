@@ -286,6 +286,21 @@ class HardwareTest(unittest.TestCase):
         self.assertTrue(gpus[0].unified)
         self.assertEqual(gpus[0].free, (131072 - 8192) * 1024 * 1024)
 
+    def test_parse_gpustat_detects_unified_by_name_without_flag(self):
+        payload = json.dumps({"gpus": [
+            {"name": "NVIDIA GB10",
+             "memory.total": 131072,
+             "memory.used": 8192,
+             "processes": []},
+            {"name": "NVIDIA RTX 4090",
+             "memory.total": 24564,
+             "memory.used": 3200,
+             "processes": []},
+        ]})
+        gpus = hardware.parse_gpustat(payload)
+        self.assertTrue(gpus[0].unified)
+        self.assertFalse(gpus[1].unified)
+
     def test_device_tree_marks_tegra_unified(self):
         with tempfile.TemporaryDirectory() as tmp:
             compatible = Path(tmp) / "compatible"

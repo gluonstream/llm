@@ -265,7 +265,8 @@ def parse_gpustat(payload):
                 free=free,
                 utilization=_gpu_number(entry.get("utilization.gpu")),
                 processes=processes,
-                unified=bool(entry.get("memory.unified", False)),
+                unified=(bool(entry.get("memory.unified", False))
+                         or is_unified_gpu_name(name)),
                 source="gpustat",
             ))
         return gpus
