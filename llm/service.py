@@ -18,7 +18,6 @@ from .diagnose import explain_failure
 PIDFILE = config.STATE / "process.json"
 LOG = config.STATE / "server.log"
 LOG_MAX_BYTES = 20 * 1024 * 1024
-LLAMA_SERVER = "/opt/homebrew/bin/llama-server"
 
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -39,7 +38,7 @@ def locked():
 def identity(pid):
     try:
         result = subprocess.run(
-            ["/bin/ps", "-p", str(pid), "-o", "lstart=", "-o", "command="],
+            [config.PS, "-p", str(pid), "-o", "lstart=", "-o", "command="],
             capture_output=True, text=True, check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -49,7 +48,7 @@ def identity(pid):
 def uptime(pid):
     try:
         result = subprocess.run(
-            ["/bin/ps", "-p", str(pid), "-o", "etime="],
+            [config.PS, "-p", str(pid), "-o", "etime="],
             capture_output=True, text=True, check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -84,7 +83,7 @@ def healthy(timeout=2):
 def listener_pid():
     try:
         result = subprocess.run(
-            ["/usr/sbin/lsof", "-nP", "-tiTCP:%d" % PORT, "-sTCP:LISTEN"],
+            [config.LSOF, "-nP", "-tiTCP:%d" % PORT, "-sTCP:LISTEN"],
             capture_output=True, text=True, check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -107,8 +106,8 @@ def is_expected_listener(pid, profile=None):
             and "--host 127.0.0.1" in actual)
 
 
-def server_args(profile, llama_server=LLAMA_SERVER):
-    args = [llama_server]
+def server_args(profile, llama_server=None):
+    args = [llama_server or config.LLAMA_SERVER]
     if "path" in profile:
         args += ["-m", profile["path"], "--offline", "-lm", "mmap", "--lazy-mode", "on"]
     else:

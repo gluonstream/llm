@@ -7,6 +7,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from . import host
+
 HOME = Path.home()
 STATE = Path(os.environ.get(
     "LMM_STATE_DIR", HOME / ".local" / "state" / "llm")).expanduser()
@@ -14,6 +16,9 @@ LEGACY_STATE = Path(os.environ.get(
     "LMM_LEGACY_STATE_DIR", HOME / ".local" / "state" / "graphify-model-service")).expanduser()
 URL = os.environ.get("LMM_URL", "http://127.0.0.1:18081").rstrip("/")
 PORT = int(os.environ.get("LMM_PORT", "18081"))
+LLAMA_SERVER = host.find_llama_server()
+PS = host.find_tool("ps", "/bin/ps")
+LSOF = host.find_tool("lsof", "/usr/sbin/lsof")
 SELECTION = STATE / "selected-model.json"
 DEFAULT = "qwen2.5-7b-instruct-q4-k-m"
 

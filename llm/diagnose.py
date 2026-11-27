@@ -2,7 +2,8 @@
 import re
 import subprocess
 
-LLAMA_SERVER = "/opt/homebrew/bin/llama-server"
+from . import config, host
+
 ARCH_RE = re.compile(r"unknown model architecture: '([^']+)'")
 VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 BUILD_RE = re.compile(r"build\s+(\d+)")
@@ -23,17 +24,18 @@ def version_at_least(installed, required):
     return have >= need
 
 
-def explain_failure(log_text):
+def explain_failure(log_text, upgrade_hint=None):
     """Turn the tail of server.log into one actionable line, or None."""
+    hint = upgrade_hint or host.llama_cpp_upgrade_hint()
     text = log_text or ""
     arch = ARCH_RE.search(text)
     if arch:
         name = arch.group(1)
         if name.lower().startswith("inkling2"):
             return ("unknown model architecture '%s' \u2192 Inkling 2 needs llama.cpp >= 1.1.0; "
-                    "run: brew upgrade llama.cpp" % name)
+                    "run: %s" % (name, hint))
         return ("unknown model architecture '%s' \u2192 upgrade your llama.cpp build; "
-                "run: brew upgrade llama.cpp" % name)
+                "run: %s" % (name, hint))
     failure = None
     for line in text.splitlines():
         if "failed to load model" in line:
@@ -43,11 +45,11 @@ def explain_failure(log_text):
     return None
 
 
-def llama_server_version(llama_server=LLAMA_SERVER):
+def llama_server_version(llama_server=None):
     result = {"raw": "", "version": None, "build": None}
     try:
         completed = subprocess.run(
-            [llama_server, "--version"], capture_output=True, text=True, check=False, timeout=20)
+            [llama_server or config.LLAMA_SERVER, "--version"], capture_output=True, text=True, check=False, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return result
     raw = (completed.stdout or completed.stderr or "").strip()
@@ -87,4 +89,23 @@ def brew_llama_cpp_status():
             available, installed)
     if installed:
         return "Homebrew llama.cpp %s" % installed
+    return None
+
+
+def llama_cpp_package_status():
+    if host.IS_MACOS:
+        return brew_llama_cpp_status()
+    if not host.IS_LINUX:
+        return None
+    path = config.LLAMA_SERVER
+    try:
+        completed = subprocess.run(
+            ["pacman", "-Qo", path], capture_output=True, text=True,
+            check=False, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = "%s%s" % (completed.stdout or "", completed.stderr or "")
+    match = re.search(r"is owned by (\S+) (\S+)", text)
+    if match:
+        return "Arch package %s %s" % (match.group(1), match.group(2))
     return None
