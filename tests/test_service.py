@@ -43,6 +43,27 @@ class ArgsTest(unittest.TestCase):
         self.assertIn("x-alias", args)
         self.assertIn("--port", args)
 
+    def test_server_args_uses_config_llama_server(self):
+        profile = {"id": "x", "alias": "x", "path": "/tmp/x.gguf", "context": 1,
+                   "sampling": {"temperature": 0, "top_p": 1, "min_p": 0,
+                                "repeat_penalty": 1}}
+        with mock.patch.object(service.config, "LLAMA_SERVER", "/custom/llama-server"):
+            self.assertEqual(service.server_args(profile)[0], "/custom/llama-server")
+
+    def test_identity_uses_config_ps(self):
+        with mock.patch.object(service.config, "PS", "/custom/ps"), \
+             mock.patch("subprocess.run") as run:
+            run.return_value.stdout = "identity"
+            service.identity(123)
+        self.assertEqual(run.call_args[0][0][0], "/custom/ps")
+
+    def test_listener_uses_config_lsof(self):
+        with mock.patch.object(service.config, "LSOF", "/custom/lsof"), \
+             mock.patch("subprocess.run") as run:
+            run.return_value.stdout = "42\n"
+            self.assertEqual(service.listener_pid(), 42)
+        self.assertEqual(run.call_args[0][0][0], "/custom/lsof")
+
 class SafetyTest(unittest.TestCase):
     def test_stale_pid_is_not_running(self):
         with tempfile.TemporaryDirectory() as tmp:

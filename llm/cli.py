@@ -292,8 +292,8 @@ def cmd_get(args):
 
 
 def cmd_doctor(args):
-    version = diagnose.llama_server_version(service.LLAMA_SERVER)
-    print("llama-server: %s" % (version["raw"] or "not found at " + service.LLAMA_SERVER))
+    version = diagnose.llama_server_version(config.LLAMA_SERVER)
+    print("llama-server: %s" % (version["raw"] or "not found at " + config.LLAMA_SERVER))
     brew = diagnose.brew_llama_cpp_status()
     if brew:
         print("Homebrew:     " + brew)
