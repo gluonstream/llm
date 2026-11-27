@@ -29,7 +29,7 @@ class CliTest(unittest.TestCase):
             with redirect_stdout(buffer):
                 self.assertEqual(cli.main(["help"]), 0)
         text = buffer.getvalue()
-        for command in ("list", "status", "use", "doctor", "logs"):
+        for command in ("list", "status", "use", "doctor", "logs", "version"):
             self.assertIn(command, text)
 
     def test_prog_follows_invocation_name(self):
@@ -225,3 +225,31 @@ class HubCliTest(unittest.TestCase):
                  redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(cli.main(["get", "owner/repo"]), 0)
         preflight.assert_not_called()
+
+
+class VersionCliTest(unittest.TestCase):
+    def _output(self, argv):
+        buffer = io.StringIO()
+        with mock.patch.object(config, "migrate_state", return_value=False), \
+             redirect_stdout(buffer):
+            self.assertEqual(cli.main(argv), 0)
+        return buffer.getvalue()
+
+    def test_version_prints_installed_and_up_to_date(self):
+        self.assertEqual(self._output(["version"]).splitlines(), [
+            "llm 1.1.1",
+            "last version is 1.1.1. you are up to date.",
+        ])
+
+    def test_version_uses_invocation_name(self):
+        with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/lmm"]):
+            lines = self._output(["version"]).splitlines()
+        self.assertEqual(lines[0], "lmm 1.1.1")
+
+    def test_version_points_to_update_when_latest_is_newer(self):
+        with mock.patch("llm.LATEST_VERSION", "1.2.0"):
+            lines = self._output(["version"]).splitlines()
+        self.assertEqual(lines, [
+            "llm 1.1.1",
+            "last version is 1.2.0. run `llm update` to update.",
+        ])

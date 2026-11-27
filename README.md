@@ -130,6 +130,7 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 | `llm get <repo>[:<quant>]` | Download, verify, and register a GGUF model. |
 | `llm doctor` | Check llama.cpp, hardware, models, port, and the last failure. |
 | `llm update [--dir PATH]` | Fetch, build, and install the latest source. |
+| `llm version` | Show the installed version and whether it is the latest release. |
 | `llm help [command]` | Show help for the CLI or a single command. |
 
 Every command resolves model names by exact id or alias, then by a unique

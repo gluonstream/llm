@@ -360,6 +360,18 @@ def cmd_update(args):
     return 0
 
 
+def cmd_version(args):
+    from . import __version__, LATEST_VERSION
+    program = _program_name()
+    print("%s %s" % (program, __version__))
+    if __version__ == LATEST_VERSION:
+        print("last version is %s. you are up to date." % LATEST_VERSION)
+    else:
+        print("last version is %s. run `%s update` to update."
+              % (LATEST_VERSION, program))
+    return 0
+
+
 def cmd_help(args):
     parser = build_parser()
     if args.topic:
@@ -430,6 +442,7 @@ def build_parser(prog=None):
     command = add("update", cmd_update,
                   "fetch the latest source, build, and install")
     command.add_argument("--dir", help="checkout directory")
+    add("version", cmd_version, "show the installed version and whether it is current")
     add("doctor", cmd_doctor, "check llama.cpp, models, port and last failure")
     command = add("help", cmd_help, "show this help or help for one command")
     command.add_argument("topic", nargs="?")
