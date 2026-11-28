@@ -127,7 +127,8 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 | `llm restart` | Restart the model service. |
 | `llm logs [-n N] [-f]` | Show the last `N` lines of the server log, optionally follow. |
 | `llm search <query>` | Search Hugging Face for GGUF models. |
-| `llm get <repo>[:<quant>]` | Download, verify, and register a GGUF model. |
+| `llm get <repo>[:<quant>]` | Download, verify, and register a GGUF model into the cache. |
+| `llm migrate-cache [--dry-run] [--verify] [--keep-old]` | Move legacy model directories into the cache. |
 | `llm doctor` | Check llama.cpp, hardware, models, port, and the last failure. |
 | `llm update [--dir PATH]` | Fetch, build, and install the latest source. |
 | `llm version` | Show the installed version and whether it is the latest release. |
@@ -186,8 +187,16 @@ llm get unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_XL --name inkling
   exits.
 - Downloads resume from a `.part` file, verify the Hugging Face SHA-256, and
   register the model automatically.
+- `get` writes the same layout Hugging Face uses: the file is stored once as
+  `blobs/<sha256>`, a relative symlink is created at
+  `snapshots/<commit>/<filename>`, and the requested revision is recorded in
+  `refs/<revision>`. Re-running the same command reuses the existing blob.
+- A provenance manifest is written to
+  `~/.local/state/llm/manifests/<model-id>.json`; nothing is added to the
+  snapshot directory.
 - Set `HF_TOKEN` for gated repositories.
-- Split GGUF sets (`-00001-of-00002`) are not supported yet.
+- Split GGUF sets (`-00001-of-00002`) are not supported by `get` yet.
+  `migrate-cache` and discovery still handle existing complete split sets.
 
 Before downloading, `get` estimates whether the model fits in RAM (including
 context overhead) and on disk. If it does not, the command prints a warning
@@ -203,6 +212,43 @@ Use --force to download anyway; the model may fail to load.
 context size used for the estimate (and stored with the model), and
 `--requires-llama-cpp VERSION` records a minimum llama.cpp version that
 `llm doctor` reports against.
+
+### Model storage and discovery
+
+Models live in the standard Hugging Face hub cache. `llm` checks these
+locations, in order:
+
+1. `HF_HUB_CACHE`
+2. `HUGGINGFACE_HUB_CACHE`
+3. `$HF_HOME/hub`
+4. `~/.cache/huggingface/hub`
+
+Each repository gets a `models--org--repo` directory with `blobs/`, `refs/`,
+and `snapshots/`. `llm get` and `llm migrate-cache` both write this layout, so
+files downloaded by `llm` can be reused by other Hugging Face tools (and vice
+versa). There is no separate `~/.local/share/llm/models` store.
+
+On startup, `llm` discovers complete GGUF models already present in the cache
+and lists them alongside the built-in profiles. A model is only picked up when
+all shards of a split set are present. Set `LMM_NO_CACHE=1` to skip discovery
+(for tests or a deliberately restricted view).
+
+### Migrating legacy downloads
+
+Older versions of `llm` (and `graphify`) stored models under
+`~/.local/share/graphify-*`. Move them into the cache without downloading
+again:
+
+```sh
+llm migrate-cache --dry-run     # show the plan
+llm migrate-cache               # hardlink/copy and remove the old directory
+llm migrate-cache --verify      # hash files before and after (slow)
+llm migrate-cache --keep-old    # leave the old directories in place
+```
+
+Migration reuses an existing blob when its size matches, hardlinks when
+possible, falls back to copying across filesystems, and only removes a legacy
+directory after every file in it migrated.
 
 ### Diagnosing problems
 
@@ -231,6 +277,10 @@ Environment variables:
 | `LMM_UPDATE_DIR` | unset | Override the self-update checkout directory. |
 | `LMM_SKIP_LLAMA_CPP_UPGRADE` | unset | Set to `1` to skip the build-time llama.cpp package check. |
 | `LMM_LLAMA_SERVER` | detected | Path to `llama-server`; overrides `PATH` detection. |
+| `LMM_NO_CACHE` | unset | Set to `1` to skip HF cache discovery. |
+| `HF_HUB_CACHE` | unset | Hugging Face cache root; highest precedence. |
+| `HUGGINGFACE_HUB_CACHE` | unset | Hugging Face cache root; used when `HF_HUB_CACHE` is unset. |
+| `HF_HOME` | unset | Hugging Face home; the cache is `$HF_HOME/hub`. |
 | `HF_TOKEN` | unset | Token for gated Hugging Face repositories. |
 
 ## Where things live
@@ -240,15 +290,20 @@ Environment variables:
 | `~/.local/state/llm/` | State directory. |
 | `.../selected-model.json` | The currently selected model id. |
 | `.../models.json` | Models registered by `llm get`. |
+| `.../manifests/<id>.json` | Provenance for each `llm get` download (URL, commit, size, SHA-256). |
 | `.../process.json` | PID and process identity of the managed server. |
 | `.../server.log` | Server output; rotated to `server.log.1` at 20 MiB. |
 | `.../lock` | Lock file serializing start/stop/select operations. |
-| `~/.local/share/llm/models/<id>/` | Downloaded models and `download-manifest.json`. |
-| `~/.local/share/graphify-*` | Built-in model files, left unchanged. |
+| `~/.cache/huggingface/hub/` | Default HF cache root; see the precedence list above. |
+| `.../models--org--repo/blobs/<sha256>` | Each model file, stored once under its SHA-256. |
+| `.../models--org--repo/snapshots/<commit>/` | Relative symlinks to blobs, one tree per commit. |
+| `.../models--org--repo/refs/<revision>` | Revision name to commit mapping (`main` by default). |
+| `~/.local/share/graphify-*` | Legacy model files; move them with `llm migrate-cache`. |
 
-Built-in model profiles are defined in `llm/config.py`. Models
-downloaded with `llm get` live in the registry above and can be added or
-removed without touching the built-ins.
+Built-in model profiles are defined in `llm/config.py` and resolve to their
+snapshot in the cache (or the path where the snapshot would be, so `doctor`
+can report it missing). Models downloaded with `llm get` live in the registry
+above and can be added or removed without touching the built-ins.
 
 ## Architecture
 
@@ -264,6 +319,7 @@ llm/
 ├── llm/
 │   ├── cli.py                      # argparse commands and handlers
 │   ├── config.py                   # paths, profiles, registry, selection
+│   ├── hfcache.py                  # HF cache layout, discovery, snapshots
 │   ├── host.py                     # OS and external tool discovery
 │   ├── service.py                  # llama-server lifecycle and health
 │   ├── hub.py                      # Hugging Face search and downloads
@@ -285,7 +341,12 @@ llm/
   recycled PID is never mistaken for the server, refuses to adopt an
   unrelated listener on the port, rotates the log, and waits for `/health`.
 - **`hub.py`** talks to the Hugging Face API, selects GGUF files, resumes
-  partial downloads, verifies SHA-256, and writes a download manifest.
+  partial downloads, verifies SHA-256, and writes blobs and provenance
+  manifests.
+- **`hfcache.py`** owns the cache layout: root precedence, snapshot and ref
+  resolution, snapshot symlinks, discovery of complete GGUF models, and
+  profile synthesis. `llm migrate-cache` uses the same helpers to import
+  legacy directories.
 - **`host.py`** detects the OS and locates external tools such as `llama-server`
   and `lsof`, honoring `LMM_LLAMA_SERVER`.
 - **`hardware.py`** detects RAM, unified memory, GPU, and free disk, then

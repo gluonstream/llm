@@ -9,6 +9,8 @@ from . import (config, diagnose, hardware, hfcache, host, hub, migrate, render,
                service, update)
 
 _subparsers = {}
+# Legacy download location. `get` writes the Hugging Face cache instead, but
+# keep the name so callers (and tests) can still refer to the old path.
 MODELS_DIR = Path.home() / ".local" / "share" / "llm" / "models"
 
 
@@ -191,18 +193,11 @@ def _registered_model(profiles, repo, filename):
     return None
 
 
-def _model_directory(profile, filename):
-    path = Path(profile["path"])
-    for _ in Path(filename).parts:
-        path = path.parent
-    return path
-
-
 def cmd_get(args):
     repo, selector = hub.parse_spec(args.spec)
     if args.file and selector:
         raise hub.HubError("Use either :QUANT or --file, not both")
-    files = hub.model_files(repo, revision=args.revision)
+    commit, files = hub.repo_info(repo, revision=args.revision)
     try:
         chosen = hub.select_file(files, args.file or selector)
     except hub.HubError as exc:
@@ -217,7 +212,6 @@ def cmd_get(args):
     if existing:
         model_id = existing["id"]
         alias = existing["alias"]
-        destination = _model_directory(existing, chosen["name"])
         if args.name and config.normalize_alias(args.name) != alias:
             raise config.ModelError("Already registered as %r; run `lmm list`" % alias)
     else:
@@ -232,14 +226,13 @@ def cmd_get(args):
                 raise config.ModelError("--name must contain a letter or digit")
             if alias in {value.lower() for value in taken_aliases if value}:
                 raise config.ModelError("Alias %r is already in use" % alias)
-        destination = MODELS_DIR / model_id
 
     size_text = render.human_size(chosen["size"]) if chosen["size"] else "unknown size"
     if not existing or args.force:
         context = (args.context if args.context is not None
                    else (existing.get("context") if existing else 8192))
         warnings = hardware.preflight(
-            chosen["size"], context, models_dir=MODELS_DIR)
+            chosen["size"], context, models_dir=hfcache.cache_root())
         if warnings:
             print("<!> Model %s may not fit on this machine <!>" % chosen["name"],
                   file=sys.stderr, flush=True)
@@ -257,39 +250,39 @@ def cmd_get(args):
     else:
         print("Downloading %s (%s) from %s" % (chosen["name"], size_text, repo),
               file=sys.stderr, flush=True)
+    blob_dir = hfcache.repo_dir(repo) / "blobs"
     try:
-        path = hub.download_file(
-            repo, chosen, destination, revision=args.revision,
+        blob = hub.download_blob(
+            repo, chosen, blob_dir, revision=args.revision,
             force=args.force, progress=_progress)
     finally:
         print("", file=sys.stderr, flush=True)
 
-    size = chosen["size"] or path.stat().st_size
-    sha256 = chosen["sha256"] or hub.sha256_file(path)
-    manifest = hub.write_manifest(
-        destination, repo, chosen["name"], args.revision, size, sha256)
+    snapshot = hfcache.link_snapshot(repo, chosen["name"], commit, blob)
+    hfcache.write_ref(repo, args.revision, commit)
+
+    size = chosen["size"] or blob.stat().st_size
+    sha256 = chosen["sha256"] or hub.sha256_file(blob)
     if existing:
         profile = dict(existing)
-        profile.update({"repo": repo, "path": str(path),
-                        "directory": str(destination),
-                        "filename": chosen["name"]})
+        profile.pop("directory", None)
+        profile.update({"repo": repo, "filename": chosen["name"],
+                        "revision": args.revision, "path": str(snapshot)})
         if args.context is not None:
             profile["context"] = args.context
     else:
-        profile = {
-            "id": model_id,
-            "alias": alias,
-            "repo": repo,
-            "path": str(path),
-            "directory": str(destination),
-            "filename": chosen["name"],
-            "context": args.context or 8192,
-            "sampling": dict(config.DEFAULT_SAMPLING),
-        }
+        profile = hfcache.downloaded_profile(
+            repo, chosen["name"], args.revision, commit, model_id, alias,
+            context=(args.context if args.context is not None else 8192),
+            sampling=config.DEFAULT_SAMPLING)
     if args.requires_llama_cpp:
         profile["min_llama_cpp"] = args.requires_llama_cpp
     config.register_model(profile)
-    print("Downloaded %s (%s) to %s" % (chosen["name"], render.human_size(size), path))
+    manifest = hub.write_manifest(
+        config.STATE / "manifests" / (model_id + ".json"), repo,
+        chosen["name"], args.revision, size, sha256, commit=commit)
+    print("Downloaded %s (%s) to %s"
+          % (chosen["name"], render.human_size(size), snapshot))
     print("Registered %s (%s). Start it with: lmm use %s" % (alias, model_id, alias))
     print("Manifest: %s" % manifest)
     return 0
@@ -356,7 +349,7 @@ def cmd_doctor(args):
     package = diagnose.llama_cpp_package_status()
     if package:
         print(("Homebrew:     " if host.IS_MACOS else "Package:      ") + package)
-    machine = hardware.detect_hardware(models_dir=MODELS_DIR)
+    machine = hardware.detect_hardware(models_dir=hfcache.cache_root())
     budget = hardware.memory_budget(machine.total_ram, machine.unified,
                                     machine.available_ram)
     details = "%s, %s RAM" % (machine.chip, render.human_size(machine.total_ram))

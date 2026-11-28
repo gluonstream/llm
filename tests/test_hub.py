@@ -1,10 +1,12 @@
 import hashlib
+import json
 import socketserver
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 
 from llm import hub
 
@@ -50,6 +52,46 @@ class HubParseTest(unittest.TestCase):
         shown, hidden = hub.filter_search(results, include_all=False)
         self.assertEqual([r["id"] for r in shown], ["a/gguf"])
         self.assertEqual(hidden, 1)
+
+
+class RepoInfoTest(unittest.TestCase):
+    def test_repo_info_returns_commit_and_files(self):
+        data = {
+            "sha": "a" * 40,
+            "siblings": [
+                {"rfilename": "M-Q4_K_M.gguf",
+                 "lfs": {"size": 10, "sha256": "b" * 64}},
+                {"rfilename": "README.md", "size": 5},
+            ],
+        }
+        with mock.patch.object(hub, "_get_json", return_value=data) as get:
+            commit, files = hub.repo_info("owner/repo")
+        self.assertEqual(commit, "a" * 40)
+        self.assertEqual(files, [{"name": "M-Q4_K_M.gguf", "size": 10,
+                                  "sha256": "b" * 64}])
+        url = get.call_args[0][0]
+        self.assertIn("/api/models/owner/repo", url)
+        self.assertIn("blobs=true", url)
+
+    def test_repo_info_uses_revision_endpoint(self):
+        data = {"sha": "d" * 40, "siblings": []}
+        with mock.patch.object(hub, "_get_json", return_value=data) as get:
+            commit, files = hub.repo_info("owner/repo", revision="dev")
+        self.assertEqual((commit, files), ("d" * 40, []))
+        self.assertIn("/revision/dev", get.call_args[0][0])
+
+    def test_repo_info_requires_a_commit(self):
+        with mock.patch.object(hub, "_get_json", return_value={"siblings": []}):
+            with self.assertRaises(hub.HubError):
+                hub.repo_info("owner/repo")
+
+    def test_model_files_is_a_compatibility_wrapper(self):
+        data = {"sha": "a" * 40,
+                "siblings": [{"rfilename": "M.gguf",
+                              "lfs": {"size": 10, "sha256": "c" * 64}}]}
+        with mock.patch.object(hub, "_get_json", return_value=data):
+            self.assertEqual(hub.model_files("owner/repo"),
+                             hub.gguf_files(data["siblings"]))
 
 
 class DownloadTest(unittest.TestCase):
@@ -115,6 +157,38 @@ class DownloadTest(unittest.TestCase):
                                      base_url=self.base)
             self.assertEqual(path.read_bytes(), self.payload)
 
+    def test_download_blob_writes_sha_named_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blob_dir = Path(tmp) / "blobs"
+            path = hub.download_blob("owner/repo", self._file(), blob_dir,
+                                     base_url=self.base)
+            self.assertEqual(path, blob_dir / self.sha)
+            self.assertEqual(path.read_bytes(), self.payload)
+            self.assertFalse((blob_dir / "m.gguf").exists())
+            self.assertEqual([item.name for item in blob_dir.iterdir()],
+                             [self.sha])
+
+    def test_download_blob_ignores_remote_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blob_dir = Path(tmp) / "blobs"
+            file_info = {"name": "sub/m.gguf", "size": len(self.payload),
+                         "sha256": self.sha}
+            path = hub.download_blob("owner/repo", file_info, blob_dir,
+                                     base_url=self.base)
+            self.assertEqual(path, blob_dir / self.sha)
+            self.assertFalse((blob_dir / "sub").exists())
+
+    def test_download_blob_resumes_part_named_after_sha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blob_dir = Path(tmp) / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / (self.sha + ".part")).write_bytes(self.payload[:1000])
+            path = hub.download_blob("owner/repo", self._file(), blob_dir,
+                                     base_url=self.base)
+            self.assertEqual(path.read_bytes(), self.payload)
+            self.assertTrue(any(value for value in self.requests))
+            self.assertFalse((blob_dir / (self.sha + ".part")).exists())
+
     def test_resume_sends_range_and_appends(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
@@ -142,12 +216,16 @@ class DownloadTest(unittest.TestCase):
 
     def test_write_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = hub.write_manifest(Path(tmp), "owner/repo", "m.gguf", "main",
-                                      len(self.payload), self.sha)
-            import json
+            path = Path(tmp) / "manifests" / "model.json"
+            path = hub.write_manifest(path, "owner/repo", "m.gguf", "main",
+                                      len(self.payload), self.sha,
+                                      commit="a" * 40)
             data = json.loads(path.read_text())
             self.assertEqual(data["bytes"], len(self.payload))
             self.assertEqual(data["sha256"], self.sha)
+            self.assertEqual(data["commit"], "a" * 40)
+            self.assertTrue(path.is_file())
+            self.assertFalse((path.parent / "download-manifest.json").exists())
 
     def test_resume_200_restarts_from_zero(self):
         self.ignore_range = True

@@ -54,6 +54,51 @@ def expected_snapshot(repo, filename, revision, root=None) -> Path:
     return repo_dir(repo, root) / "snapshots" / commit / filename
 
 
+def _safe_component(value, label):
+    text = str(value)
+    if (not text or text in (".", "..") or "/" in text or "\\" in text
+            or "\x00" in text):
+        raise ValueError("Unsafe %s: %r" % (label, text))
+    return text
+
+
+def _safe_relative_filename(filename):
+    relative = Path(str(filename))
+    if (relative.is_absolute() or not relative.parts
+            or any(part in ("", "..") for part in relative.parts)):
+        raise ValueError("Unsafe model filename: %r" % filename)
+    return relative
+
+
+def snapshot_path(repo, filename, commit, root=None) -> Path:
+    """Return snapshots/<commit>/<filename> without touching the filesystem."""
+    commit = _safe_component(commit, "commit")
+    relative = _safe_relative_filename(filename)
+    return repo_dir(repo, root) / "snapshots" / commit / relative
+
+
+def link_snapshot(repo, filename, commit, blob, root=None) -> Path:
+    """Symlink a blob into snapshots/<commit>/<filename>; return the link."""
+    snapshot = snapshot_path(repo, filename, commit, root)
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    if snapshot.is_symlink() or snapshot.exists():
+        if snapshot.is_dir() and not snapshot.is_symlink():
+            raise ValueError("Snapshot path is a directory: %s" % snapshot)
+        snapshot.unlink()
+    os.symlink(os.path.relpath(blob, snapshot.parent), snapshot)
+    return snapshot
+
+
+def write_ref(repo, revision, commit, root=None) -> Path:
+    """Write refs/<revision> = commit and return the ref file."""
+    revision = _safe_component(revision, "revision")
+    refs = repo_dir(repo, root) / "refs"
+    refs.mkdir(parents=True, exist_ok=True)
+    path = refs / revision
+    path.write_text(str(commit))
+    return path
+
+
 def resolve_snapshot(repo, filename, revision, root=None) -> Optional[Path]:
     expected = expected_snapshot(repo, filename, revision, root)
     if expected.exists():
@@ -200,6 +245,25 @@ def profile_for(repo, revision, group, root=None, sampling=None) -> dict:
         "sampling": dict(sampling) if sampling else dict(DEFAULT_SAMPLING),
         "source": "cache",
     }
+
+
+def downloaded_profile(repo, filename, revision, commit, model_id=None,
+                       alias=None, root=None, context=8192, sampling=None):
+    """Build the profile for a file `get` just placed in the cache."""
+    snapshot = snapshot_path(repo, filename, commit, root)
+    profile = {
+        "repo": repo,
+        "filename": Path(str(filename)).as_posix(),
+        "revision": str(revision),
+        "path": str(snapshot),
+        "context": int(context),
+        "sampling": dict(sampling) if sampling else dict(DEFAULT_SAMPLING),
+    }
+    if model_id is not None:
+        profile["id"] = model_id
+    if alias is not None:
+        profile["alias"] = alias
+    return profile
 
 
 def discover(root=None, env=None, sampling=None) -> dict:

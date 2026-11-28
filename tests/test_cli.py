@@ -1,11 +1,15 @@
 import contextlib
 import hashlib
 import io
+import json
 import os
+import socketserver
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -118,131 +122,224 @@ class HubCliTest(unittest.TestCase):
             self.assertEqual(cli.main(["search", "inkling"]), 0)
         self.assertIn("unsloth/Inkling-2-Mini-GGUF", buffer.getvalue())
 
-    def test_get_registers_selected_file(self):
-        files = [{"name": "M-Q4_K_M.gguf", "size": 10, "sha256": "a"}]
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(config, "migrate_state", return_value=False), \
-             mock.patch.object(hub, "model_files", return_value=files), \
-             mock.patch.object(hub, "download_file",
-                               return_value=Path(tmp) / "M-Q4_K_M.gguf"), \
-             mock.patch.object(hub, "write_manifest"), \
-             mock.patch.object(config, "register_model") as register, \
-             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["get", "owner/repo:Q4_K_M"]), 0)
-        self.assertEqual(register.call_args[0][0]["path"],
-                         str(Path(tmp) / "M-Q4_K_M.gguf"))
+    def test_registered_model_matches_full_relative_filename(self):
+        profiles = {"a": {"repo": "o/r", "path": "/m/a/M.gguf",
+                          "filename": "a/M.gguf"}}
+        self.assertIsNone(cli._registered_model(profiles, "o/r", "b/M.gguf"))
+
+
+class GetCacheTest(unittest.TestCase):
+    """Exercise `get` end to end against a local HTTP server and temp cache."""
+
+    COMMIT = "a" * 40
+    PAYLOAD = b"gguf-bytes"
+    FILENAME = "M-Q4.gguf"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        # hfcache.cache_root() resolves the env path; match that here.
+        self.cache = (self.root / "hub").resolve()
+        self.state = self.root / "state" / "llm"
+        self.legacy = self.root / "legacy-models"
+        self.sha = hashlib.sha256(self.PAYLOAD).hexdigest()
+        self.requests = []
+        self.siblings = [self._sibling(self.FILENAME)]
+
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                outer.requests.append(self.path)
+                if self.path.startswith("/api/models/"):
+                    body = json.dumps({
+                        "sha": outer.COMMIT,
+                        "siblings": outer.siblings,
+                    }).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(outer.PAYLOAD)))
+                self.end_headers()
+                self.wfile.write(outer.PAYLOAD)
+
+        class TestServer(HTTPServer):
+            def server_bind(self):
+                socketserver.TCPServer.server_bind(self)
+                host, port = self.server_address[:2]
+                self.server_name = host
+                self.server_port = port
+
+        self.server = TestServer(("127.0.0.1", 0), Handler)
+        self.base = "http://127.0.0.1:%d" % self.server.server_port
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+        self._patch(mock.patch.dict(
+            os.environ, {"HF_HUB_CACHE": str(self.cache)}))
+        self._patch(mock.patch.object(hub, "BASE_URL", self.base))
+        self._patch(mock.patch.object(config, "STATE", self.state))
+        self._patch(mock.patch.object(config, "USER_MODELS",
+                                      self.state / "models.json"))
+        self._patch(mock.patch.object(config, "PROFILES", {}))
+        self._patch(mock.patch.object(cli, "MODELS_DIR", self.legacy))
+        self._patch(mock.patch.object(hardware, "preflight", return_value=[]))
+        self._patch(mock.patch.object(config, "migrate_state",
+                                      return_value=False))
+
+    def _patch(self, patcher):
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return patcher
+
+    def _sibling(self, name):
+        return {"rfilename": name,
+                "lfs": {"size": len(self.PAYLOAD), "sha256": self.sha}}
+
+    def _run(self, argv):
+        return run_cli(argv)
+
+    def _repo_dir(self):
+        return self.cache / "models--owner--repo"
+
+    def _snapshot(self, filename=None):
+        return (self._repo_dir() / "snapshots" / self.COMMIT
+                / (filename or self.FILENAME))
+
+    def _registry(self):
+        return json.loads((self.state / "models.json").read_text())
+
+    def _add_existing(self):
+        existing = {
+            "id": "existing",
+            "alias": "existing",
+            "repo": "owner/repo",
+            "filename": self.FILENAME,
+            "revision": "main",
+            "path": str(self._snapshot()),
+            "context": 4096,
+            "sampling": {"temperature": 0},
+        }
+        config.PROFILES["existing"] = existing
+        return existing
+
+    def test_get_writes_snapshot_and_profile(self):
+        self.assertEqual(self._run(["get", "owner/repo:Q4"]), 0)
+        snapshot = self._snapshot()
+        blob = self._repo_dir() / "blobs" / self.sha
+        self.assertTrue(snapshot.is_symlink())
+        self.assertEqual(snapshot.resolve(), blob.resolve())
+        self.assertEqual(snapshot.read_bytes(), self.PAYLOAD)
+        self.assertFalse(os.path.isabs(os.readlink(snapshot)))
+        self.assertEqual(
+            (self._repo_dir() / "refs" / "main").read_text(), self.COMMIT)
+        self.assertTrue(any("/api/models/owner/repo" in path
+                            for path in self.requests))
+        self.assertFalse(
+            (self._repo_dir() / "download-manifest.json").exists())
+
+        profile = next(iter(self._registry().values()))
+        self.assertEqual(profile["repo"], "owner/repo")
+        self.assertEqual(profile["filename"], self.FILENAME)
+        self.assertEqual(profile["revision"], "main")
+        self.assertEqual(profile["path"], str(snapshot))
+        self.assertEqual(profile["context"], 8192)
+        self.assertEqual(profile["sampling"], config.DEFAULT_SAMPLING)
+
+        manifest = self.state / "manifests" / (profile["id"] + ".json")
+        self.assertTrue(manifest.is_file())
+        data = json.loads(manifest.read_text())
+        self.assertEqual(data["repo"], "owner/repo")
+        self.assertEqual(data["sha256"], self.sha)
+        self.assertEqual(data["commit"], self.COMMIT)
+        self.assertFalse((snapshot.parent / "download-manifest.json").exists())
+
+    def test_get_never_writes_local_share(self):
+        self.assertEqual(self._run(["get", "owner/repo:Q4"]), 0)
+        self.assertFalse(self.legacy.exists())
+        self.assertFalse((self.root / ".local").exists())
+        self.assertFalse(
+            (self._repo_dir() / "download-manifest.json").exists())
+
+    def test_get_registers_nested_filename(self):
+        self.siblings = [self._sibling("sub/M-Q4.gguf")]
+        self.assertEqual(self._run(["get", "owner/repo:Q4"]), 0)
+        snapshot = self._snapshot("sub/M-Q4.gguf")
+        self.assertTrue(snapshot.is_symlink())
+        self.assertEqual(snapshot.read_bytes(), self.PAYLOAD)
+        profile = next(iter(self._registry().values()))
+        self.assertEqual(profile["filename"], "sub/M-Q4.gguf")
+        self.assertEqual(profile["path"], str(snapshot))
 
     def test_get_ambiguous_selector_lists_candidates(self):
         files = [{"name": "A-Q4.gguf", "size": 1, "sha256": "a"},
                  {"name": "A-Q5.gguf", "size": 2, "sha256": "b"}]
         buffer = io.StringIO()
-        with mock.patch.object(config, "migrate_state", return_value=False), \
-             mock.patch.object(hub, "model_files", return_value=files), \
+        with mock.patch.object(hub, "repo_info",
+                               return_value=(self.COMMIT, files)), \
              redirect_stdout(io.StringIO()), redirect_stderr(buffer):
             self.assertEqual(cli.main(["get", "owner/repo"]), 1)
         self.assertIn("A-Q4.gguf", buffer.getvalue())
         self.assertIn("A-Q5.gguf", buffer.getvalue())
 
     def test_get_rejects_selector_plus_file(self):
-        with mock.patch.object(config, "migrate_state", return_value=False), \
-             mock.patch.object(hub, "model_files", return_value=[]), \
-             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["get", "owner/repo:Q4", "--file", "x.gguf"]), 1)
+        with mock.patch.object(hub, "repo_info") as info:
+            self.assertEqual(
+                self._run(["get", "owner/repo:Q4", "--file", "x.gguf"]), 1)
+        info.assert_not_called()
 
     def test_get_is_idempotent_for_registered_model(self):
-        files = [{"name": "M-Q4.gguf", "size": 10, "sha256": "a"}]
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp) / "models" / "existing"
-            directory.mkdir(parents=True)
-            path = directory / "M-Q4.gguf"
-            path.write_bytes(b"x" * 10)
-            existing = {"id": "existing", "alias": "existing", "repo": "owner/repo",
-                        "path": str(path), "context": 8192, "sampling": {}}
-            with mock.patch.object(config, "migrate_state", return_value=False), \
-                 mock.patch.object(config, "PROFILES", {"existing": existing}), \
-                 mock.patch.object(hub, "model_files", return_value=files), \
-                 mock.patch.object(hub, "download_file", return_value=path) as download, \
-                 mock.patch.object(hub, "write_manifest"), \
-                 mock.patch.object(config, "register_model") as register, \
-                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                self.assertEqual(cli.main(["get", "owner/repo"]), 0)
-            self.assertEqual(download.call_args[0][2], directory)
-            self.assertEqual(register.call_args[0][0]["id"], "existing")
+        existing = self._add_existing()
+        self.assertEqual(self._run(["get", "owner/repo"]), 0)
+        downloads = [path for path in self.requests if "/resolve/" in path]
+        self.assertEqual(self._run(["get", "owner/repo"]), 0)
+        self.assertEqual(
+            [path for path in self.requests if "/resolve/" in path], downloads)
+        profile = self._registry()["existing"]
+        self.assertEqual(profile["id"], "existing")
+        self.assertEqual(profile["path"], str(self._snapshot()))
+        self.assertEqual(profile["context"], existing["context"])
+        self.assertEqual(profile["sampling"], existing["sampling"])
+        self.assertTrue((self._repo_dir() / "blobs" / self.sha).is_file())
+        self.assertEqual(
+            len(list((self._repo_dir() / "blobs").iterdir())), 1)
 
     def test_get_refuses_when_hardware_too_small(self):
-        files = [{"name": "M-Q4.gguf", "size": 10, "sha256": "a"}]
-        with mock.patch.object(config, "migrate_state", return_value=False), \
-             mock.patch.object(config, "PROFILES", {}), \
-             mock.patch.object(hub, "model_files", return_value=files), \
-             mock.patch.object(hardware, "preflight", return_value=["model does not fit"]), \
-             mock.patch.object(hub, "download_file") as download, \
-             mock.patch.object(hub, "write_manifest"), \
-             mock.patch.object(config, "register_model"), \
-             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["get", "owner/repo:Q4"]), 1)
+        with mock.patch.object(hardware, "preflight",
+                               return_value=["model does not fit"]), \
+             mock.patch.object(hub, "download_blob") as download:
+            self.assertEqual(self._run(["get", "owner/repo:Q4"]), 1)
         download.assert_not_called()
+        self.assertFalse(self._repo_dir().exists())
 
     def test_get_force_downloads_when_hardware_refuses(self):
-        files = [{"name": "M-Q4.gguf", "size": 10, "sha256": "a"}]
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(config, "migrate_state", return_value=False), \
-             mock.patch.object(config, "PROFILES", {}), \
-             mock.patch.object(hub, "model_files", return_value=files), \
-             mock.patch.object(hardware, "preflight", return_value=["model does not fit"]), \
-             mock.patch.object(hub, "download_file",
-                               return_value=Path(tmp) / "M-Q4.gguf") as download, \
-             mock.patch.object(hub, "write_manifest"), \
-             mock.patch.object(config, "register_model"), \
-             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["get", "owner/repo:Q4", "--force"]), 0)
-        download.assert_called_once()
-
-    def test_registered_model_matches_full_relative_filename(self):
-        profiles = {"a": {"repo": "o/r", "path": "/m/a/M.gguf",
-                          "filename": "a/M.gguf"}}
-        self.assertIsNone(cli._registered_model(profiles, "o/r", "b/M.gguf"))
-
-    def test_get_is_idempotent_for_nested_filename(self):
-        files = [{"name": "sub/M.gguf", "size": 10, "sha256": "a"}]
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp) / "models" / "existing"
-            path = directory / "sub" / "M.gguf"
-            path.parent.mkdir(parents=True)
-            path.write_bytes(b"x" * 10)
-            existing = {"id": "existing", "alias": "existing", "repo": "owner/repo",
-                        "path": str(path), "directory": str(directory),
-                        "filename": "sub/M.gguf", "context": 8192, "sampling": {}}
-            with mock.patch.object(config, "migrate_state", return_value=False), \
-                 mock.patch.object(config, "PROFILES", {"existing": existing}), \
-                 mock.patch.object(hub, "model_files", return_value=files), \
-                 mock.patch.object(hub, "download_file", return_value=path) as download, \
-                 mock.patch.object(hub, "write_manifest"), \
-                 mock.patch.object(config, "register_model") as register, \
-                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                self.assertEqual(cli.main(["get", "owner/repo"]), 0)
-            self.assertEqual(download.call_args[0][2], directory)
-            self.assertEqual(register.call_args[0][0]["id"], "existing")
+        with mock.patch.object(hardware, "preflight",
+                               return_value=["model does not fit"]):
+            self.assertEqual(self._run(["get", "owner/repo:Q4", "--force"]), 0)
+        self.assertTrue((self._repo_dir() / "blobs" / self.sha).is_file())
 
     def test_get_existing_skips_preflight_without_force(self):
-        files = [{"name": "M-Q4.gguf", "size": 10, "sha256": "a"}]
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp) / "models" / "existing"
-            directory.mkdir(parents=True)
-            path = directory / "M-Q4.gguf"
-            path.write_bytes(b"x" * 10)
-            existing = {"id": "existing", "alias": "existing", "repo": "owner/repo",
-                        "path": str(path), "directory": str(directory),
-                        "filename": "M-Q4.gguf", "context": 8192, "sampling": {}}
-            with mock.patch.object(config, "migrate_state", return_value=False), \
-                 mock.patch.object(config, "PROFILES", {"existing": existing}), \
-                 mock.patch.object(hub, "model_files", return_value=files), \
-                 mock.patch.object(hardware, "preflight") as preflight, \
-                 mock.patch.object(hub, "download_file", return_value=path), \
-                 mock.patch.object(hub, "write_manifest"), \
-                 mock.patch.object(config, "register_model"), \
-                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                self.assertEqual(cli.main(["get", "owner/repo"]), 0)
+        self._add_existing()
+        with mock.patch.object(hardware, "preflight") as preflight:
+            self.assertEqual(self._run(["get", "owner/repo"]), 0)
         preflight.assert_not_called()
+
+    def test_get_respects_context_override(self):
+        self.assertEqual(
+            self._run(["get", "owner/repo:Q4", "--context", "2048"]), 0)
+        profile = next(iter(self._registry().values()))
+        self.assertEqual(profile["context"], 2048)
 
 
 class MigrateCacheCliTest(unittest.TestCase):
