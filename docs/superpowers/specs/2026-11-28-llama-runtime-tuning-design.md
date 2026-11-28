@@ -176,6 +176,53 @@ profile's current KV type (f16 if unset) and writes only context.
 `doctor` adds a `Runtime:` line for the selected model with KV, batch/ubatch,
 fit, cache-reuse, and the observed peak from `server.log`.
 
+## Model analysis
+
+`llm analyze [--context N]` prints one row per model in `config.PROFILES`
+(built-ins + cache-discovered + user), using the same GGUF metadata as
+`apply`:
+
+```
+MODEL                  SIZE    CTX    f16      q8_0     q4_0     q8_0 SAVE   FIT
+qwen2.5-7b-instruct    4.4G    64K    3.50G    1.86G    0.98G    46.9%       yes
+```
+
+- Values are at `--context` (default 64K); `fits` uses `context_budget` and the
+  q8_0 estimate.
+- Missing/unreadable metadata produces a row with `-` values, never a crash.
+- Inkling's per-layer head counts are handled by the typed KV math.
+
+## Generation and speculative decoding
+
+Runtime fields extend the `runtime` block:
+
+- `top_k`, `n_predict` — server sampling defaults (`--top-k`, `-n`).
+- `spec_type` (`none`, `draft-simple`, `draft-mtp`, `draft-eagle3`),
+  `draft_model` (path) — speculative decoding (`-md`, `--spec-type`).
+- `cmoe` — keep MoE expert weights on CPU (`-cmoe`).
+- `reasoning` (`on|off|auto`), `reasoning_budget` — `-rea`,
+  `--reasoning-budget`.
+- `devices` — comma-separated `-dev` list.
+
+`apply` exposes `--spec-type`, `--draft MODEL`, `--cmoe`, `--reasoning`,
+`--reasoning-budget`, `--device`, `--top-k`, `--predict`. `--draft MODEL`
+resolves a profile and stores its cache path; a draft without `--spec-type`
+defaults to `draft-simple`. Flags are emitted only when supported. `doctor`
+and `context` include spec/CMOE/reasoning in the runtime summary.
+
+## Codex sync
+
+`llm apply --sync-codex` edits `~/.codex/config.toml` (or
+`CODEX_HOME/config.toml`) with a targeted line editor so comments, plugins,
+and marketplaces survive:
+
+- top-level `model = "<selected alias>"`, `model_provider = "llamacpp"`;
+- `[model_providers.llamacpp]` with `name = "llama.cpp"`,
+  `base_url = "<llm URL>/v1"`, `wire_api = "responses"`,
+  `requires_openai_auth = false`, `supports_websockets = false`;
+- timestamped backup, atomic write, no write when nothing changed;
+- `--sync-clients` covers OpenCode, Pi, and Codex; `doctor` warns on drift.
+
 ## Edge cases
 
 - `-ctk/-ctv` unsupported: keep f16 and report that the policy's KV was not
@@ -201,8 +248,10 @@ fit, cache-reuse, and the observed peak from `server.log`.
   built-in/discovered ids, preservation of context.
 - `tests/test_service.py`: flags emitted per runtime, unsupported flags omitted,
   `-fa on` forced for quantized KV, legacy defaults.
-- `tests/test_cli.py`: `apply --policy` writes context+runtime, dry-run leaves
+- `tests/test_analysis.py`: rows for f16/q8_0/q4_0, missing metadata, Inkling per-layer heads, table columns.
+- `tests/test_codex.py`: TOML edits preserve other sections, backup, idempotency, dry-run, mismatches.
+- `tests/test_cli.py`: `apply --runtime-policy` writes context+runtime, dry-run leaves
   both untouched, restart on runtime change, table columns, `context`/`doctor`
   runtime lines.
-- Manual: `apply --dry-run` on this machine; balanced should move qwen to 128K
+- Manual: `analyze`, `apply --dry-run`, `apply --dry-run --sync-clients` on this machine; balanced should move qwen to 128K
   and Inkling/GLM to 64K with q8_0, while the 61.9 GiB cache model is refused.

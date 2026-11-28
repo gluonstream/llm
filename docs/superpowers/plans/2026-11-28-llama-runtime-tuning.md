@@ -348,7 +348,204 @@ git commit -m "feat: apply runtime policies and show tuning"
 
 ---
 
-### Task 5: Version 1.3.0, docs, full verification
+### Task 5: `llm analyze` KV table
+
+**Files:**
+- Create: `llm/analysis.py`
+- Modify: `llm/render.py`, `llm/cli.py`
+- Test: `tests/test_analysis.py`, `tests/test_render.py`, `tests/test_cli.py`
+
+**Interfaces:**
+- Produces:
+  - `analysis.rows(profiles, context=65536, machine=None) -> list[dict]`
+  - `render.format_analysis(rows, context)`
+  - `analyze [--context N]` subcommand
+
+Row keys: `model`, `alias`, `size`, `context`, `f16`, `q8_0`, `q4_0`, `saving`, `fits`, `native`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_rows_compute_three_kv_types(self)
+    # qwen metadata -> f16 3.50 GiB, q8_0 1.86, q4_0 0.98 at 64K
+def test_rows_skip_missing_or_unreadable_metadata(self)
+    # missing file / no metadata -> values None, still a row
+def test_rows_handle_inkling_per_layer_heads(self)
+    # Inkling 64K f16 4.50 GiB
+def test_format_analysis_columns(self)
+    # header MODEL SIZE CONTEXT f16 q8_0 q4_0 SAVE FIT; contains "46.9%"
+def test_analyze_cli_context_override(self)
+    # ["analyze", "--context", "131072"] uses 128K
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python3 -m unittest tests.test_analysis tests.test_render tests.test_cli -v`
+Expected: missing `llm.analysis`.
+
+- [ ] **Step 3: Implement**
+
+`analysis.rows(profiles, context, machine=None)`:
+- for each profile with a readable `path` and metadata, compute
+  `f16 = kv_cache_bytes(meta, context, "f16", "f16")`, `q8_0`, `q4_0`;
+- `saving = 1 - q8_0 / f16` (None if f16 is 0/None);
+- `fits` = `estimate_required(size, context, meta, "q8_0", "q8_0") <= context_budget(machine)`
+  when size and machine are available; else None;
+- row always includes the model, even when metadata is missing (values None);
+- dedupe by profile id; preserve `config.PROFILES` order (built-ins first).
+
+`render.format_analysis`: one row per model with GiB values, a percent
+`46.9%`, and `yes/no/-` for fit.
+
+Parser: `add("analyze", cmd_analyze, "show KV memory for every cached model")`,
+`--context` default `65536`.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python3 -m unittest tests.test_analysis tests.test_render tests.test_cli -v`
+Expected: all pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/analysis.py llm/render.py llm/cli.py tests/test_analysis.py tests/test_render.py tests/test_cli.py
+git commit -m "feat: add llm analyze KV memory table"
+```
+
+---
+
+### Task 6: Generation and speculative controls
+
+**Files:**
+- Modify: `llm/runtime.py`, `llm/config.py`, `llm/service.py`, `llm/cli.py`, `llm/render.py`
+- Test: `tests/test_runtime.py`, `tests/test_config.py`, `tests/test_service.py`, `tests/test_cli.py`
+
+**Interfaces:**
+- Runtime additions: `spec_type` (`none`, `draft-simple`, `draft-mtp`,
+  `draft-eagle3`), `draft_model` (path), `cmoe` (bool), `reasoning`
+  (`on|off|auto`), `reasoning_budget` (int), `devices` (comma string or list),
+  `top_k` (int), `n_predict` (int).
+- `apply` additions: `--spec-type`, `--draft MODEL`, `--cmoe`,
+  `--reasoning on|off|auto`, `--reasoning-budget N`, `--device LIST`,
+  `--top-k N`, `--predict N`.
+- `service.server_args` emits `-md`, `--spec-type`, `-cmoe`, `-rea`,
+  `--reasoning-budget`, `-dev`, `--top-k`, `-n` only when supported.
+- `doctor`/`context` runtime summary includes spec/cmoe/reasoning.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_runtime_validation_new_fields(self)
+def test_server_args_speculative_flags(self)
+def test_server_args_generation_flags(self)
+def test_server_args_unsupported_spec_flags_omitted(self)
+def test_apply_draft_resolves_to_path(self)
+def test_apply_cmoe_reasoning_device_flags(self)
+def test_runtime_summary_includes_spec_and_cmoe(self)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python3 -m unittest tests.test_runtime tests.test_config tests.test_service tests.test_cli -v`
+Expected: unknown fields/flags.
+
+- [ ] **Step 3: Implement**
+
+- Extend `policy_runtime`/`_COMMON` with `spec_type="none"`, `draft_model=""`,
+  `cmoe=False`, `reasoning="auto"`, `reasoning_budget=-1`, `devices=""`,
+  `top_k=40`, `n_predict=-1`.
+- Extend `_validate_runtime` for the new fields/types; `draft_model` must be a
+  string, `devices` a string/list, `reasoning` in on/off/auto, `spec_type` in
+  the allowed set, integers for `top_k`/`n_predict`/`reasoning_budget`.
+- `apply --draft MODEL`: `config.resolve_model` → use its `path`; store it in
+  `runtime["draft_model"]`. If `--spec-type` is omitted with a draft, default
+  to `draft-simple`.
+- `server_args`: per-flag support gates; `-md`, `--spec-type`, `-cmoe`, `-rea`,
+  `--reasoning-budget`, `-dev`, `--top-k`, `-n`.
+- `render.runtime_summary` appends `· spec <type>` and `· cmoe` when set.
+- `doctor` selected-model line includes spec/CMOE/reasoning.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python3 -m unittest tests.test_runtime tests.test_config tests.test_service tests.test_cli -v`
+Expected: all pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/runtime.py llm/config.py llm/service.py llm/cli.py llm/render.py tests/test_runtime.py tests/test_config.py tests/test_service.py tests/test_cli.py
+git commit -m "feat: add generation and speculative decoding controls"
+```
+
+---
+
+### Task 7: Codex config sync
+
+**Files:**
+- Create: `llm/codex.py`
+- Modify: `llm/cli.py`, `llm/render.py`? no
+- Test: `tests/test_codex.py`, `tests/test_cli.py`
+
+**Interfaces:**
+- Produces:
+  - `config_path() -> Path` (`CODEX_HOME/config.toml`, else `~/.codex/config.toml`)
+  - `read_config(path=None) -> Optional[str]` (raw text)
+  - `sync(profiles, selected_alias, path=None, dry_run=False) -> SyncResult`
+  - `mismatches(selected_alias, path=None) -> list`
+  - `apply --sync-codex`; `--sync-clients` includes OpenCode, Pi, Codex.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_sync_sets_model_and_provider(self)
+    # top-level model = selected alias, model_provider = "llamacpp"
+def test_sync_writes_llamacpp_section(self)
+    # [model_providers.llamacpp] name/base_url/wire_api/auth/websockets
+def test_sync_preserves_other_sections(self)
+    # existing [marketplaces.*]/[plugins.*] untouched
+def test_sync_is_idempotent_and_dry_run(self)
+def test_sync_writes_backup(self)
+def test_mismatches_reports_model_and_url(self)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python3 -m unittest tests.test_codex tests.test_cli -v`
+Expected: missing `llm.codex`.
+
+- [ ] **Step 3: Implement**
+
+Codex config is TOML with a single model. Use a targeted line editor, not a
+full TOML writer, so comments/other sections survive:
+
+- replace/insert top-level `model = "<selected alias>"` and
+  `model_provider = "llamacpp"` before the first `[section]`;
+- find `[model_providers.llamacpp]`; replace/add
+  `name = "llama.cpp"`, `base_url = "<config.URL>/v1"`,
+  `wire_api = "responses"`, `requires_openai_auth = false`,
+  `supports_websockets = false`; keep other keys in that section;
+- if the section is absent, append it;
+- no write when nothing changed; timestamped backup; atomic write;
+- `dry_run` returns without writing;
+- `mismatches` compares the model/provider/base_url and lists differences;
+- `apply --sync-codex` syncs the selected profile alias; `--sync-clients`
+  includes Codex. `doctor` warns on mismatch.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python3 -m unittest tests.test_codex tests.test_cli -v`
+Expected: all pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/codex.py llm/cli.py tests/test_codex.py tests/test_cli.py
+git commit -m "feat: sync the local model into Codex config"
+```
+
+---
+
+### Task 8: Version 1.3.0, docs, full verification
 
 **Files:**
 - Modify: `llm/__init__.py`, `README.md`
