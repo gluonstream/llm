@@ -1,5 +1,7 @@
 """Fetch, build, and install the latest llm from GitHub."""
 import argparse
+import base64
+import json
 import os
 from pathlib import Path
 import re
@@ -12,8 +14,8 @@ from . import __version__, host
 
 REPO_URL = "https://github.com/gluonstream/llm.git"
 LAST_VERSION_URL = (
-    "https://raw.githubusercontent.com/gluonstream/llm/"
-    "main/LAST_VERSION.md")
+    "https://api.github.com/repos/gluonstream/llm/"
+    "contents/LAST_VERSION.md?ref=main")
 CHECKOUT_NAME = "llm-update"
 BRANCH = "main"
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
@@ -50,6 +52,16 @@ def latest_version(url=LAST_VERSION_URL, opener=urllib.request.urlopen,
             text = response.read().decode("utf-8", "replace")
     except (OSError, ValueError):
         return None
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("content"), str):
+        try:
+            text = base64.b64decode(payload["content"]).decode(
+                "utf-8", "replace")
+        except (ValueError, TypeError):
+            return None
     match = _VERSION_RE.search(text)
     return ".".join(match.groups()) if match else None
 
