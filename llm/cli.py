@@ -56,7 +56,8 @@ def cmd_list(args):
     failure = None if (running and running["ready"]) else service.last_failure()
     for warning in config.PROFILE_WARNINGS:
         print("warning: " + warning, file=sys.stderr)
-    print(render.format_list(profiles, selected["id"], sizes, running, failure))
+    contexts = {profile_id: profile["context"] for profile_id, profile in profiles.items()}
+    print(render.format_list(profiles, selected["id"], sizes, running, failure, contexts))
     print()
     print("Service %s.   Endpoint %s/v1"
           % ("running" if running else "stopped", config.URL))
@@ -67,7 +68,11 @@ def cmd_status(args):
     selected = config.selected_profile()
     running = _running_info(config.PROFILES)
     listener = None if running else service.listener_pid()
-    print(render.format_status(selected["id"], running, listener, config.URL + "/v1"))
+    server_context = (service.server_context()
+                      if running and running["ready"] else None)
+    print(render.format_status(selected["id"], running, listener,
+                               config.URL + "/v1", context=selected["context"],
+                               server_context=server_context))
     if not running:
         failure = service.last_failure()
         if failure:

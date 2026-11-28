@@ -80,6 +80,17 @@ def healthy(timeout=2):
         return False
 
 
+def server_context(timeout=2):
+    try:
+        with HTTP.open(URL + "/props", timeout=timeout) as response:
+            data = json.load(response)
+    except (OSError, ValueError):
+        return None
+    settings = data.get("default_generation_settings")
+    value = settings.get("n_ctx") if isinstance(settings, dict) else data.get("n_ctx")
+    return value if type(value) is int and value > 0 else None
+
+
 def listener_pid():
     try:
         result = subprocess.run(

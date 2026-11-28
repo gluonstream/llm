@@ -60,6 +60,19 @@ class CliTest(unittest.TestCase):
         with mock.patch.object(config, "SELECTION", Path("/nonexistent/selection.json")):
             self.assertEqual(self._main(["use", "nope"]), 1)
 
+    def test_status_warns_when_server_context_differs(self):
+        selected = {"id": "qwen2.5-7b-instruct-q4-k-m", "context": 65536}
+        running = {"id": "qwen2.5-7b-instruct-q4-k-m", "ready": True,
+                   "pid": 42, "uptime": "4m"}
+        buffer = io.StringIO()
+        with mock.patch.object(config, "selected_profile", return_value=selected), \
+             mock.patch.object(cli, "_running_info", return_value=running), \
+             mock.patch.object(service, "server_context", return_value=8192), \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             redirect_stdout(buffer):
+            self.assertEqual(cli.main(["status"]), 0)
+        self.assertIn("warning", buffer.getvalue())
+
 
 class CliFixTest(unittest.TestCase):
     def test_local_size_missing_multishard_is_none(self):

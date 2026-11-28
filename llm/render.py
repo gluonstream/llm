@@ -2,6 +2,7 @@
 
 NAME_WIDTH = 32
 SIZE_WIDTH = 10
+CONTEXT_WIDTH = 7
 
 
 def human_size(num_bytes):
@@ -12,6 +13,14 @@ def human_size(num_bytes):
                 return "%d B" % int(value)
             return "%.1f %s" % (value, unit)
         value /= 1024
+
+
+def short_context(n):
+    if n is None:
+        return ""
+    if n % 1024 == 0:
+        return "%dK" % (n // 1024)
+    return "{:,}".format(n)
 
 
 def _status(profile_id, selected_id, running):
@@ -25,17 +34,21 @@ def _status(profile_id, selected_id, running):
     return "downloaded · not running"
 
 
-def format_list(profiles, selected_id, local_sizes, running, selected_failure):
-    lines = ["  %-*s  %*s  %s" % (NAME_WIDTH, "MODEL", SIZE_WIDTH, "SIZE", "STATUS")]
+def format_list(profiles, selected_id, local_sizes, running, selected_failure, contexts=None):
+    lines = ["  %-*s  %*s  %*s  %s"
+             % (NAME_WIDTH, "MODEL", SIZE_WIDTH, "SIZE", CONTEXT_WIDTH, "CONTEXT", "STATUS")]
     for profile_id, profile in profiles.items():
         name = profile.get("alias") or profile_id
         size = local_sizes.get(profile_id)
         size_text = "missing" if size is None else human_size(size)
+        context = contexts.get(profile_id) if contexts else None
+        context_text = short_context(context)
         selected_marker = "* " if profile_id == selected_id else "  "
         running_marker = "▶ " if running and running.get("id") == profile_id else ""
-        lines.append("%s%s%-*s  %*s  %s" % (
+        lines.append("%s%s%-*s  %*s  %*s  %s" % (
             selected_marker, running_marker, NAME_WIDTH, name,
-            SIZE_WIDTH, size_text, _status(profile_id, selected_id, running)))
+            SIZE_WIDTH, size_text, CONTEXT_WIDTH, context_text,
+            _status(profile_id, selected_id, running)))
     if running and running.get("id") != selected_id:
         lines.append("")
         lines.append("warning: selected model is not the running model")
@@ -45,8 +58,10 @@ def format_list(profiles, selected_id, local_sizes, running, selected_failure):
     return "\n".join(lines)
 
 
-def format_status(selected, running, listener, endpoint):
+def format_status(selected, running, listener, endpoint, context=None, server_context=None):
     lines = ["Selected: %s" % selected]
+    if context is not None:
+        lines.append("Context: %s" % short_context(context))
     if running:
         state = "ready" if running.get("ready") else "loading"
         lines.append("Service:  RUNNING · %s · PID %s · up %s" % (
@@ -54,6 +69,11 @@ def format_status(selected, running, listener, endpoint):
     else:
         lines.append("Service:  stopped")
     lines.append("Endpoint: %s" % endpoint)
+    if server_context is not None:
+        lines.append("server %s" % short_context(server_context))
+        if context is not None and context != server_context:
+            lines.append("warning: server context %s differs from configured %s"
+                         % (short_context(server_context), short_context(context)))
     if listener and (not running or running.get("pid") != listener):
         lines.append("warning: port %s is held by an unmanaged PID %s"
                      % (endpoint.rsplit(":", 1)[-1].split("/")[0], listener))

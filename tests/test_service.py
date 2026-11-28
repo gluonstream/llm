@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -89,3 +90,17 @@ class SafetyTest(unittest.TestCase):
             empty.touch()
             with self.assertRaises(service.ModelLoadError):
                 service.validate_profile_files({"id": "x", "path": str(empty)})
+
+
+class PropsTest(unittest.TestCase):
+    def test_server_context_reads_props(self):
+        payload = json.dumps({"default_generation_settings": {"n_ctx": 8192}})
+        response = io.StringIO(payload)
+        fake_open = mock.MagicMock()
+        fake_open.return_value.__enter__.return_value = response
+        with mock.patch.object(service.HTTP, "open", fake_open):
+            self.assertEqual(service.server_context(), 8192)
+
+    def test_server_context_returns_none_when_unreachable(self):
+        with mock.patch.object(service.HTTP, "open", side_effect=OSError):
+            self.assertIsNone(service.server_context())
