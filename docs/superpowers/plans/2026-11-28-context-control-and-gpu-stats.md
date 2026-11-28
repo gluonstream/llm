@@ -521,15 +521,17 @@ git commit -m "feat: show context and explain context-overflow failures"
 
 ---
 
-### Task 6: OpenCode config sync
+### Task 6: Client config sync — OpenCode and Pi
 
 **Files:**
 - Create: `llm/opencode.py`
+- Create: `llm/pi.py`
 - Create: `tests/test_opencode.py`
+- Create: `tests/test_pi.py`
 
 **Interfaces:**
-- Consumes: nothing from earlier tasks; receives a profiles dict.
-- Produces:
+- Consumes: nothing from earlier tasks; each adapter receives a profiles dict.
+- Produces (both adapters):
   - `config_path() -> Path`
   - `read_config(path=None) -> Optional[dict]`
   - `@dataclass SyncResult` with `path`, `updated`, `added`, `unchanged`, `skipped`, `backup`
@@ -539,72 +541,75 @@ git commit -m "feat: show context and explain context-overflow failures"
 
 - [ ] **Step 1: Write the failing tests**
 
-Use a temp `opencode.json` shaped like the real one (a `llamacpp` provider with `qwen2.5-7b-instruct-graphify` at 65536, plus an unrelated `deepseek` provider).
+OpenCode: use a temp `opencode.json` shaped like the real one (a `llamacpp` provider with `qwen2.5-7b-instruct-graphify` at 65536, plus a `deepseek` provider).
 
 ```python
-def test_sync_updates_existing_entry(self)
-    # sync({"id": {"alias": "qwen2.5-7b-instruct-graphify", "context": 8192}})
-    # -> limit.context == 8192, other keys preserved
+def test_opencode_sync_updates_existing_entry(self)
+    # limit.context == 8192, other keys preserved
+def test_opencode_sync_adds_missing_entry(self)
+def test_opencode_sync_preserves_other_providers(self)
+def test_opencode_sync_leaves_unknown_entries(self)
+def test_opencode_sync_writes_backup(self)
+def test_opencode_sync_skips_invalid_config(self)
+def test_opencode_sync_dry_run_does_not_write(self)
+def test_opencode_mismatches_reports_differences(self)
+```
 
-def test_sync_adds_missing_entry(self)
-    # alias not present -> {"name": alias, "limit": {"context": N}} added
+Pi: use a temp `models.json` shaped like the real `~/.pi/agent/models.json` — a `providers.llamacpp-local` with `baseUrl` `http://127.0.0.1:18081/v1`, `api` `openai-completions`, `apiKey` `local`, and a `models` list whose entries have `id`, `name`, `contextWindow`, `maxTokens`; plus an unrelated provider.
 
-def test_sync_preserves_other_providers(self)
-    # deepseek provider unchanged
-
-def test_sync_leaves_unknown_entries(self)
-    # an existing llamacpp entry with no matching profile remains; unknown_entries lists it
-
-def test_sync_writes_backup(self)
-    # opencode.json.bak-* exists and contains the old content
-
-def test_sync_skips_invalid_config(self)
-    # invalid JSON -> skipped non-empty, file byte-identical
-
-def test_sync_dry_run_does_not_write(self)
-    # dry_run=True -> file content unchanged, backup is None, updated lists the change
-
-def test_mismatches_reports_differences(self)
-    # (alias, 65536, 8192) for a profile at 8192
+```python
+def test_pi_config_path_uses_env(self)
+    # PI_CODING_AGENT_DIR -> <dir>/models.json; otherwise ~/.pi/agent/models.json
+def test_pi_sync_updates_context_window_by_id(self)
+    # existing {"id": alias, "contextWindow": 8192, ...} -> contextWindow updated, siblings preserved
+def test_pi_sync_adds_missing_model(self)
+    # new {"id": alias, "name": alias, "contextWindow": N, "maxTokens": 2048}
+def test_pi_sync_preserves_other_providers(self)
+def test_pi_sync_requires_the_local_provider(self)
+    # no provider with the local baseUrl and no llamacpp-local -> skipped, file unchanged
+def test_pi_sync_writes_backup(self)
+def test_pi_sync_skips_invalid_config(self)
+def test_pi_sync_dry_run_does_not_write(self)
+def test_pi_mismatches_reports_differences(self)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python3 -m unittest tests.test_opencode -v`
-Expected: `ModuleNotFoundError: No module named 'llm.opencode'`.
+Run: `python3 -m unittest tests.test_opencode tests.test_pi -v`
+Expected: `ModuleNotFoundError` for `llm.opencode` / `llm.pi`.
 
 - [ ] **Step 3: Implement**
 
-`config_path`: `LMM_OPENCODE_CONFIG`, else `$XDG_CONFIG_HOME/opencode/opencode.json`, else `~/.config/opencode/opencode.json`.
+OpenCode (`llm/opencode.py`):
+- `config_path`: `LMM_OPENCODE_CONFIG`, else `$XDG_CONFIG_HOME/opencode/opencode.json`, else `~/.config/opencode/opencode.json`.
+- `read_config`: `None` on `OSError`/`ValueError`/non-dict.
+- `sync`: use `provider.llamacpp.models`; update `entry["limit"]["context"]` by alias, add missing `{"name": alias, "limit": {"context": N}}`; preserve siblings; skip when the provider/models are missing; no write/backup if nothing changed; atomic write with a timestamped backup.
+- `mismatches`/`unknown_entries` as before.
 
-`read_config`: return `None` on `OSError`/`ValueError`/non-dict.
-
-`sync`:
-- `config = read_config(path)`; if `None` → `SyncResult(skipped=["config not found or invalid"])`.
-- `provider = config.get("provider")`; then `provider = provider.get("llamacpp") if isinstance(provider, dict) else None`; require `models` to be a dict, else skip.
-- For each profile with a non-empty `alias` and an `int` `context`: key = alias. Existing entry → if `entry.get("limit")` is not a dict, replace it with `{}`; then set `entry["limit"]["context"] = context`. New → add `{"name": alias, "limit": {"context": context}}`.
-- If `dry_run`, return without writing.
-- If there are no updated and no added entries, return without writing or creating a backup.
-- Backup `path.name + ".bak-" + strftime("%Y%m%d-%H%M%S")` with `shutil.copy2`; write atomically (`tempfile` + `os.replace`), `json.dump(indent=2)` + `"\n"`.
-- Return lists of updated/added/unchanged/skipped aliases and the backup path.
-
-`mismatches`: for each profile alias, compare `models[alias].limit.context` with the profile context; include `None` when missing.
-
-`unknown_entries`: provider model keys whose alias is not in the supplied profiles.
+Pi (`llm/pi.py`):
+- `config_path`: `PI_CODING_AGENT_DIR` + `/models.json`, else `~/.pi/agent/models.json`.
+- `read_config`: `None` on `OSError`/`ValueError`/non-dict.
+- `sync`:
+  - find a provider whose `baseUrl` (trailing slash trimmed) equals `config.URL + "/v1"`; if none, use `providers["llamacpp-local"]` when present; otherwise skip with `"no local llamacpp provider"`.
+  - `models` must be a list; map entries by `id`.
+  - existing `id` == alias → set `contextWindow`; preserve every other key.
+  - missing → append `{"id": alias, "name": alias, "contextWindow": N, "maxTokens": 2048}`.
+  - no write/backup when nothing changed; `dry_run` returns without writing.
+  - atomic write with a timestamped backup (`models.json.bak-YYYYmmdd-HHMMSS`), 2-space indent, trailing newline.
+- `mismatches`: `(alias, contextWindow_or_None, llm_context)`.
+- `unknown_entries`: provider model ids not in the supplied profiles.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python3 -m unittest tests.test_opencode -v`
+Run: `python3 -m unittest tests.test_opencode tests.test_pi -v`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add llm/opencode.py tests/test_opencode.py
-git commit -m "feat: sync context limits into OpenCode config"
+git add llm/opencode.py llm/pi.py tests/test_opencode.py tests/test_pi.py
+git commit -m "feat: sync context limits into OpenCode and Pi configs"
 ```
-
----
 
 ### Task 7: Doctor integration
 
@@ -613,7 +618,7 @@ git commit -m "feat: sync context limits into OpenCode config"
 - Test: `tests/test_cli.py` (append)
 
 **Interfaces:**
-- Consumes: `config.load_registry`, `hardware.detect_hardware` (with `gpus`), `opencode.mismatches`, `opencode.unknown_entries`, `service.server_context`.
+- Consumes: `config.load_registry`, `hardware.detect_hardware` (with `gpus`), `opencode.mismatches`, `opencode.unknown_entries`, `pi.mismatches`, `pi.unknown_entries`, `service.server_context`.
 - Produces: no new public functions; `doctor` prints context, GPU, install hint, drift and override warnings.
 
 - [ ] **Step 1: Write the failing tests**
@@ -636,6 +641,10 @@ def test_doctor_warns_opencode_mismatch(self)
     # opencode.mismatches returns [("qwen...", 65536, 8192)]
     # output contains "opencode" and "--sync-opencode"
 
+def test_doctor_warns_pi_mismatch(self)
+    # pi.mismatches returns [("qwen...", 65536, 8192)]
+    # output contains "pi" and "--sync-pi"
+
 def test_doctor_shows_invalid_override_warning(self)
     # config.load_registry().invalid = [("x", "invalid context")]
     # output contains "warning" and "x"
@@ -655,6 +664,7 @@ Expected: assertions fail on the missing output.
 - Hint: if `host.IS_LINUX` and any GPU name contains `NVIDIA` and `shutil.which("gpustat")` is `None`, print the install hint. Use the pacman variant when `shutil.which("pacman")` exists; otherwise `pipx install gpustat`.
 - Server drift: when `pid` and `service.healthy()`, `actual = service.server_context()`; if `actual` and `actual != selected["context"]`, print `warning: configured <short>, server <short> → run llm restart`.
 - OpenCode: `installed = {id: p for id, p in config.PROFILES.items() if _local_size(p)}`; print each mismatch from `opencode.mismatches(installed)` as `warning: opencode.json says <x>, llm says <y> for <alias> → run llm apply --sync-opencode`; print unknown entries as a note.
+- Pi: the same for `pi.mismatches(installed)` / `pi.unknown_entries(installed)`, using `warning: pi models.json says <x>, llm says <y> for <alias> → run llm apply --sync-pi`.
 - Invalid overrides: `for model_id, reason in config.load_registry().invalid: print("warning: override for %s ignored (%s)" % ...)`.
 - Keep the existing output and `Last failure` block.
 
@@ -781,8 +791,14 @@ def test_apply_no_restart_prints_hint(self)
 def test_apply_syncs_opencode_with_flag(self)
     # --sync-opencode -> opencode.sync called with installed profiles
 
-def test_apply_default_does_not_touch_opencode(self)
-    # without the flag -> opencode.sync not called
+def test_apply_syncs_pi_with_flag(self)
+    # --sync-pi -> pi.sync called with installed profiles
+
+def test_apply_syncs_both_with_sync_clients(self)
+    # --sync-clients -> both opencode.sync and pi.sync called
+
+def test_apply_default_does_not_touch_clients(self)
+    # without a flag -> neither opencode.sync nor pi.sync is called
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -800,21 +816,27 @@ command.add_argument("--context", type=int, default=None)
 command.add_argument("--dry-run", action="store_true")
 command.add_argument("--no-restart", action="store_true")
 command.add_argument("--sync-opencode", action="store_true")
+command.add_argument("--sync-pi", action="store_true")
+command.add_argument("--sync-clients", action="store_true")
 ```
 
-Add `opencode` to the `from . import ...` line in `llm/cli.py`.
+Add `opencode` and `pi` to the `from . import ...` line in `llm/cli.py`.
 
 `cmd_apply`:
 1. `targets`: named models via `config.resolve_model`, or every profile with `_local_size` not `None`. Error on a named model that is not installed.
-2. `machine = hardware.detect_hardware(models_dir=MODELS_DIR)`.
+2. `machine = hardware.detect_hardware(models_dir=hfcache.cache_root())`.
 3. For each target: `size = _local_size(profile)`; `metadata = gguf.read_metadata(profile["path"])` when a path exists; `choice = hardware.choose_context(size, profile["context"], machine, metadata, ceiling=args.context)`; build a row. Missing files are rows with `action="missing"` and are not written.
 4. Print `render.format_apply(rows)`.
 5. `installed = {id: config.PROFILES[id] for id in target_ids if _local_size(profile) is not None}`.
-6. If `--dry-run`: if `--sync-opencode`, call `opencode.sync(installed, dry_run=True)` and print its summary; return 0.
+6. If `--dry-run`:
+   - `--sync-opencode` or `--sync-clients` → `opencode.sync(installed, dry_run=True)` and print the summary;
+   - `--sync-pi` or `--sync-clients` → `pi.sync(installed, dry_run=True)` and print the summary;
+   - return 0.
 7. `with service.locked():`
    - for each changed row: `config.set_context(id, choice.context)`;
    - `config.reload_profiles()`;
-   - if `--sync-opencode`: `result = opencode.sync(installed)`; print added/updated/backup;
+   - `--sync-opencode` or `--sync-clients` → `opencode.sync(installed)`, print added/updated/backup;
+   - `--sync-pi` or `--sync-clients` → `pi.sync(installed)`, print added/updated/backup;
    - restart decision: `pid = service.running()`; if `pid`:
      - `actual = service.server_context()`;
      - `running_id` = the profile whose alias appears in `service.identity(pid)`;
@@ -865,7 +887,7 @@ Set `__version__ = "1.2.0"` and `LATEST_VERSION = "1.2.0"`.
 
 Add:
 - `llm context [MODEL] [N|auto]` and `llm apply [MODEL...]` to the command list;
-- an `apply` section with the table example, `--dry-run`, `--context` as a ceiling, `--no-restart`, `--sync-opencode`, and the 64K/128K rule;
+- an `apply` section with the table example, `--dry-run`, `--context` as a ceiling, `--no-restart`, `--sync-opencode`, `--sync-pi`, `--sync-clients`, and the 64K/128K rule;
 - a GPU section: `gpustat` install on Arch
   (`sudo pacman -S python-pipx`, `pipx ensurepath`, `pipx install gpustat`,
   reopen the shell), macOS fallback, and that it is optional;
@@ -874,6 +896,9 @@ Add:
   points at `llm apply`.
 - OpenCode sync: `llm apply --sync-opencode` rewrites only the
   `llamacpp` provider's `limit.context`, with a timestamped backup.
+- Pi sync: `llm apply --sync-pi` rewrites the local provider's
+  `contextWindow` in `~/.pi/agent/models.json` (or `PI_CODING_AGENT_DIR`),
+  with a timestamped backup. `--sync-clients` does both.
 
 - [ ] **Step 3: Mark the spec approved**
 
@@ -892,10 +917,10 @@ Expected: `Built /Users/davide/projects/llm/dist/llm` and the zipapp `help` smok
 ```bash
 ./dist/llm doctor
 ./dist/llm apply --dry-run
-./dist/llm apply --dry-run --sync-opencode
+./dist/llm apply --dry-run --sync-clients
 ```
 
-Expected: doctor shows per-model contexts and the storage/GPU lines; `apply --dry-run` shows qwen moving toward 128K when exact KV fits and inkling/glm kept or moved to 64K with a reason; OpenCode dry-run lists the `limit.context` changes without writing.
+Expected: doctor shows per-model contexts and the storage/GPU lines; `apply --dry-run` shows qwen moving toward 128K when exact KV fits and inkling/glm kept or moved to 64K with a reason; the client dry-run lists the `limit.context`/`contextWindow` changes without writing.
 
 - [ ] **Step 6: Commit**
 

@@ -29,9 +29,9 @@ Goals:
 - On Linux, `gpustat --json` supplies precise VRAM/ utilisation/process data,
   with `nvidia-smi`, AMD sysfs, and `lspci` fallbacks.
 - `doctor` explains context-overflow failures and warns when the running
-  server, the stored profile, and OpenCode disagree.
-- `apply --sync-opencode` rewrites the local `llamacpp` provider limits so
-  OpenCode follows `llm`.
+  server, the stored profile, OpenCode, or Pi disagree.
+- `apply --sync-opencode` / `--sync-pi` (or `--sync-clients` for both) rewrites
+  the local provider limits so OpenCode and Pi follow `llm`.
 
 Non-goals:
 
@@ -101,11 +101,11 @@ Anti-goals (would make this a failure even if it works):
    attribution and no benefit on AMD. Rejected.
 3. **Require `gpustat`.** Breaks macOS and non-NVIDIA Linux. Rejected.
 
-### D. Keeping OpenCode in sync
+### D. Keeping OpenCode and Pi in sync
 
-1. **Opt-in `apply --sync-opencode` rewrites the local provider (chosen).**
-   `llm` never edits another tool's config unless asked. `doctor` warns about
-   mismatches either way.
+1. **Opt-in `apply --sync-opencode` / `--sync-pi` / `--sync-clients` rewrites
+   each local provider (chosen).** `llm` never edits another tool's config
+   unless asked. `doctor` warns about mismatches either way.
 2. **Always sync.** Surprising side effects. Rejected.
 3. **Print a snippet only.** Keeps drift. Rejected.
 
@@ -202,7 +202,7 @@ on what other processes are using the GPU.
 ### 4. Command surface
 
 ```
-llm apply [MODEL...] [--context N] [--dry-run] [--no-restart] [--sync-opencode]
+llm apply [MODEL...] [--context N] [--dry-run] [--no-restart] [--sync-opencode] [--sync-pi] [--sync-clients]
 llm context [MODEL] [TOKENS|auto]
 ```
 
@@ -268,6 +268,9 @@ differ.
 - OpenCode mismatch: for each alias in the local `llamacpp` provider,
   `opencode.json says 65536, llm says 8192 → run llm apply --sync-opencode`.
   Missing entries are reported too.
+- Pi mismatch: for each model id in the local provider,
+  `pi models.json says 65536, llm says 8192 → run llm apply --sync-pi`.
+  Missing entries are reported too.
 
 `diagnose.explain_failure` learns:
 
@@ -304,18 +307,17 @@ Probe order:
 
 All probes accept an injected runner so tests never touch the host.
 
-### 7. OpenCode sync
+### 7. Client config sync — OpenCode and Pi
 
-New `llm/opencode.py`:
+Two opt-in adapters, both fed the **installed** models from the `apply` run.
+
+`llm/opencode.py`:
 
 - `config_path()` = `LMM_OPENCODE_CONFIG`, else
   `$XDG_CONFIG_HOME/opencode/opencode.json`, else
   `~/.config/opencode/opencode.json`.
 - `read_config(path)` returns `None` when absent or invalid.
 - `sync(profiles, path=None)`:
-  - `profiles` is the set of **installed** models from the `apply` run, not
-    every known profile; a model that is not installed must not appear in
-    OpenCode as a selectable-but-dead entry;
   - updates `provider.llamacpp.models` entries keyed by each profile's alias;
   - sets `limit.context` to the effective context, preserving sibling keys;
   - adds a missing entry as `{"name": alias, "limit": {"context": N}}`;
@@ -327,6 +329,27 @@ New `llm/opencode.py`:
   - if the provider or `models` map is missing, do nothing and report why.
 - `mismatches(profiles, path=None)` returns
   `[(alias, opencode_value_or_None, llm_value)]` for `doctor`.
+
+`llm/pi.py`:
+
+- `config_path()` = `$PI_CODING_AGENT_DIR/models.json`, else
+  `~/.pi/agent/models.json`.
+- Provider selection: the provider whose `baseUrl` (trailing slash trimmed)
+  equals `<llm URL>/v1`; if none matches, `providers["llamacpp-local"]`; if
+  neither exists, skip with a reason.
+- `models` is a list. Existing entries match by `id` == profile alias; sync sets
+  `contextWindow` and preserves every other key. A missing entry is added as
+  `{"id": alias, "name": alias, "contextWindow": N, "maxTokens": 2048}`.
+- No other provider is touched. No write/backup when nothing changed. Atomic
+  write with `models.json.bak-YYYYmmdd-HHMMSS`, 2-space indent, trailing
+  newline.
+- `mismatches(profiles, path=None)` returns
+  `[(alias, contextWindow_or_None, llm_value)]`; `unknown_entries` lists model
+  ids in the provider that `llm` does not know.
+
+`apply` flags: `--sync-opencode`, `--sync-pi`, `--sync-clients` (both).
+`--dry-run` reports the planned changes without writing. `doctor` reports
+mismatches and unknowns for both clients.
 
 ### 8. Version and docs
 
@@ -345,9 +368,12 @@ New `llm/opencode.py`:
 - Built-in alias shadowing and unknown override ids: ignored, reported by
   `doctor`.
 - Service not healthy: `/props` probe skipped; no restart attempted.
-- `--sync-opencode` when OpenCode is not installed: print a note, exit 0.
-- `--sync-opencode` only sees models installed during that `apply`; unknown
-  entries already in the provider are left alone and reported by `doctor`.
+- `--sync-opencode` / `--sync-pi` when that client is not installed: print a
+  note, exit 0.
+- Client sync only sees models installed during that `apply`; unknown entries
+  already in the provider are left alone and reported by `doctor`.
+- `--sync-clients` syncs both; one client's failure does not roll back the
+  other's write (each adapter writes atomically).
 - Multiple GPUs: sum total VRAM for the capacity budget; print each GPU
   separately; warn if live free VRAM is below the chosen estimate.
 - `apply` while the server is loaded: budgeting is capacity-based, so the
@@ -371,14 +397,18 @@ New `llm/opencode.py`:
 - `tests/test_opencode.py`: sync updates/creates entries for installed models
   only, preserves other providers, leaves unknown provider entries alone,
   writes a backup, leaves invalid config untouched, reports mismatches.
+- `tests/test_pi.py`: path from `PI_CODING_AGENT_DIR`, provider discovery by
+  base URL, `contextWindow` update/add, sibling preservation, backup, invalid
+  config, dry-run, mismatches/unknowns.
 - `tests/test_diagnose.py`: overflow pattern and hint text.
 - `tests/test_cli.py`: `apply --dry-run` output and no writes; `apply` writes
   and reloads; `context` show/set/auto (auto writes; `--dry-run` does not);
   `--context` acts as a ceiling; restart when changed or when `/props` differs;
-  `--sync-opencode`; `doctor` GPU/mismatch/overflow lines.
+  `--sync-opencode`, `--sync-pi`, `--sync-clients`; `doctor` GPU/mismatch/
+  overflow lines.
 - Manual verification on this Mac: `apply --dry-run` shows qwen → 128K
   (exact KV), inkling/glm conservative; `apply` then `restart`; OpenCode's
-  provider updated with `--sync-opencode`.
+  provider updated with `--sync-opencode` and Pi's with `--sync-pi`.
 
 ## Left to the builder
 
