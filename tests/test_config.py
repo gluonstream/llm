@@ -369,6 +369,27 @@ class RegistryTest(unittest.TestCase):
                 config.set_tuning(config.DEFAULT, 65536,
                                   {"kv_type_k": "q3_k"}, path=registry)
 
+    def test_cache_reuse_zero_is_valid_and_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            config.set_tuning(config.DEFAULT, 65536,
+                              self._runtime(cache_reuse=0), path=registry)
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides[config.DEFAULT]["runtime"]["cache_reuse"], 0)
+            merged = config.load_profiles(path=registry, discovered={})
+            self.assertEqual(merged[config.DEFAULT]["runtime"]["cache_reuse"], 0)
+
+    def test_negative_cache_reuse_reported_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({
+                "overrides": {"x": {
+                    "context": 65536,
+                    "runtime": {"cache_reuse": -1}}}}))
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides, {})
+            self.assertTrue(reg.invalid)
+
     def test_context_source_reports_cache_for_discovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             discovered = dict(self._profile(

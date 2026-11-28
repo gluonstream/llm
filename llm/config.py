@@ -132,8 +132,13 @@ def _validate_runtime(runtime):
                 errors.append("flash_attn must be on, off, or auto")
                 continue
             clean[key] = value
-        elif key in ("batch", "ubatch", "parallel", "cache_reuse",
-                     "fit_target"):
+        elif key == "cache_reuse":
+            # 0 means "disabled"; negative or non-int values are rejected.
+            if isinstance(value, bool) or type(value) is not int or value < 0:
+                errors.append("cache_reuse must be a non-negative integer")
+                continue
+            clean[key] = value
+        elif key in ("batch", "ubatch", "parallel", "fit_target"):
             if isinstance(value, bool) or type(value) is not int or value <= 0:
                 errors.append("%s must be a positive integer" % key)
                 continue
