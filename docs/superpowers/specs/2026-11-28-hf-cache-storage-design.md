@@ -86,7 +86,10 @@ For each `models--<org>--<repo>` directory:
    - `alias` = `slug(stem-without-shard-suffix)`;
    - on collision with a built-in/user profile or another discovered model,
      append `-2`, `-3`, … deterministically (sorted by repo then filename).
-6. Synthesized profile:
+6. Skip a discovered model whose `(repo, filename)` or resolved `path`
+   matches a built-in or user profile; the curated profile wins and the same
+   file must not appear twice in `list`.
+7. Synthesized profile:
    ```json
    {
      "id": "...",

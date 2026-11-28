@@ -370,3 +370,51 @@ Expected: all pass.
 git add llm/hub.py llm/cli.py llm/hfcache.py README.md tests/test_hub.py tests/test_cli.py
 git commit -m "feat: download models into the HF cache"
 ```
+
+---
+
+### Task 5: Dedupe cache discovery against built-ins and user models
+
+**Files:**
+- Modify: `llm/config.py`
+- Test: `tests/test_config.py`
+
+**Interfaces:**
+- Consumes: `load_profiles` (built-ins → discovered → user), `hfcache.discover`.
+- Produces: discovery merge skips a discovered profile whose `(repo, filename)` or resolved `path` matches an already-merged profile.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_discovery_does_not_duplicate_a_builtin(self)
+    # discovered qwen with the same repo/filename as the built-in qwen
+    # -> only the built-in alias appears; no qwen2-5-7b-instruct-q4-k-m duplicate
+
+def test_discovery_skips_same_resolved_path(self)
+    # discovered profile pointing at the same file as a built-in/user model
+    # -> skipped even when repo/filename metadata differs
+
+def test_discovery_keeps_distinct_cache_models(self)
+    # a different repo/file still appears
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m unittest tests.test_config -v`
+Expected: duplicates appear, so the assertions fail.
+
+- [ ] **Step 3: Implement**
+
+In `load_profiles`, while adding discovered profiles, build a set of `(repo, filename)` and resolved `path` values from the built-ins and user models merged so far. Skip a discovered profile when either key matches; otherwise add it and register its keys. Keep the existing id/alias collision rules.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python3 -m unittest tests.test_config -v`
+Expected: all pass; `llm list` shows exactly the three built-ins plus the two distinct cache models.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/config.py tests/test_config.py
+git commit -m "fix: dedupe discovered cache models against known profiles"
+```
