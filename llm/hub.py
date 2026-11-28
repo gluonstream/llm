@@ -113,12 +113,26 @@ def gguf_files(siblings):
     return files
 
 
-def model_files(repo, revision="main"):
-    url = BASE_URL + "/api/models/" + urllib.parse.quote(repo, safe="/") + "?blobs=true"
+def repo_info(repo, revision="main"):
+    """Return (commit, GGUF files) for a repository at a revision."""
+    quoted = urllib.parse.quote(repo, safe="/")
+    if str(revision) == "main":
+        url = BASE_URL + "/api/models/" + quoted + "?blobs=true"
+    else:
+        url = (BASE_URL + "/api/models/" + quoted + "/revision/"
+               + urllib.parse.quote(str(revision), safe="") + "?blobs=true")
     data = _get_json(url)
     if not isinstance(data, dict):
         raise HubError("Hugging Face returned an unexpected model response for %s" % repo)
-    return gguf_files(data.get("siblings"))
+    commit = data.get("sha")
+    if not commit:
+        raise HubError("Hugging Face did not report a commit for %s" % repo)
+    return str(commit), gguf_files(data.get("siblings"))
+
+
+def model_files(repo, revision="main"):
+    """Return the GGUF files for a repository (compatibility wrapper)."""
+    return repo_info(repo, revision=revision)[1]
 
 
 def select_file(files, selector):
@@ -177,14 +191,13 @@ def safe_destination(dest_dir, filename):
     return candidate
 
 
-def download_file(repo, file, dest_dir, base_url=BASE_URL, revision="main",
-                  force=False, progress=None):
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    filename = file["name"]
-    final = safe_destination(dest_dir, filename)
-    part = safe_destination(dest_dir, filename + ".part")
+def _download_to(repo, file, final, part, base_url, revision, force, progress):
+    """Download file to part, verify it, then replace final with it."""
+    final = Path(final)
+    part = Path(part)
+    final.parent.mkdir(parents=True, exist_ok=True)
     part.parent.mkdir(parents=True, exist_ok=True)
+    filename = file["name"]
     expected_size = file.get("size")
     expected_sha = file.get("sha256")
 
@@ -254,9 +267,62 @@ def download_file(repo, file, dest_dir, base_url=BASE_URL, revision="main",
     return final
 
 
-def write_manifest(dest_dir, repo, filename, revision, size, sha256):
+def download_file(repo, file, dest_dir, base_url=None, revision="main",
+                  force=False, progress=None):
+    base_url = BASE_URL if base_url is None else base_url
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
+    filename = file["name"]
+    final = safe_destination(dest_dir, filename)
+    part = safe_destination(dest_dir, filename + ".part")
+    return _download_to(repo, file, final, part, base_url, revision, force,
+                        progress)
+
+
+def _blob_name(expected_sha):
+    name = str(expected_sha)
+    if (not name or name in (".", "..") or "/" in name or "\\" in name
+            or "\x00" in name):
+        raise HubError("Unsafe blob name: %r" % expected_sha)
+    return name
+
+
+def download_blob(repo, file, blob_dir, base_url=None, revision="main",
+                  force=False, progress=None):
+    """Download a file into the cache as a blob named by its SHA-256."""
+    base_url = BASE_URL if base_url is None else base_url
+    blob_dir = Path(blob_dir)
+    blob_dir.mkdir(parents=True, exist_ok=True)
+    expected_sha = file.get("sha256")
+    if expected_sha:
+        name = _blob_name(expected_sha)
+        final = blob_dir / name
+        part = blob_dir / (name + ".part")
+        return _download_to(repo, file, final, part, base_url, revision,
+                            force, progress)
+
+    # Hugging Face normally reports a SHA-256 for LFS files. If it does not,
+    # download under the remote name, hash the result, then name the blob.
+    filename = Path(str(file.get("name") or ""))
+    if not filename.name or filename.name in (".", ".."):
+        raise HubError("Unsafe model filename: %r" % file.get("name"))
+    scratch = safe_destination(blob_dir, filename.name)
+    part = safe_destination(blob_dir, filename.name + ".part")
+    downloaded = _download_to(repo, file, scratch, part, base_url, revision,
+                              force, progress)
+    name = _blob_name(sha256_file(downloaded))
+    target = blob_dir / name
+    if target.exists() and not force:
+        downloaded.unlink(missing_ok=True)
+        return target
+    os.replace(downloaded, target)
+    return target
+
+
+def write_manifest(path, repo, filename, revision, size, sha256, commit=None):
+    """Write a provenance manifest to an explicit file path."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
         "url": _download_url(repo, filename, revision, BASE_URL),
         "revision": revision,
@@ -265,8 +331,9 @@ def write_manifest(dest_dir, repo, filename, revision, size, sha256):
         "repo": repo,
         "filename": filename,
     }
-    path = dest_dir / "download-manifest.json"
-    temporary = dest_dir / "download-manifest.json.tmp"
+    if commit:
+        manifest["commit"] = commit
+    temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True))
     os.replace(temporary, path)
     return path

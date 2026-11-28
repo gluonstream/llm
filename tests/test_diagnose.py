@@ -1,5 +1,10 @@
+import os
 import unittest
 from unittest import mock
+
+# Set before importing llm: `discover -s tests` imports modules top-level and
+# does not run tests/__init__.py.
+os.environ.setdefault("LMM_NO_CACHE", "1")
 
 from llm import diagnose
 
@@ -30,6 +35,24 @@ class DiagnoseTest(unittest.TestCase):
     def test_explain_failure_accepts_an_upgrade_hint(self):
         log = "error loading model: unknown model architecture: 'inkling2_loop'\n"
         self.assertIn("custom hint", diagnose.explain_failure(log, upgrade_hint="custom hint"))
+
+    def test_explain_context_overflow(self):
+        log = ("request (13996 tokens) exceeds the available context size "
+               "(8192 tokens)\n")
+        message = diagnose.explain_failure(log)
+        self.assertIn("13,996", message)
+        self.assertIn("8,192", message)
+        self.assertIn("llm apply", message)
+
+    def test_explain_uses_last_overflow_in_tail(self):
+        log = ("request (13996 tokens) exceeds the available context size "
+               "(8192 tokens)\n"
+               "request (20000 tokens) exceeds the available context size "
+               "(32768 tokens)\n")
+        message = diagnose.explain_failure(log)
+        self.assertIn("20,000", message)
+        self.assertIn("32,768", message)
+        self.assertNotIn("13,996", message)
 
     def test_llama_server_version_uses_config_path(self):
         with mock.patch.object(diagnose.config, "LLAMA_SERVER", "/custom/llama-server"), \

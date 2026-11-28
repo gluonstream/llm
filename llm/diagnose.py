@@ -7,6 +7,8 @@ from . import config, host
 ARCH_RE = re.compile(r"unknown model architecture: '([^']+)'")
 VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 BUILD_RE = re.compile(r"build\s+(\d+)")
+CONTEXT_OVERFLOW_RE = re.compile(
+    r"request \((\d+) tokens\) exceeds the available context size \((\d+) tokens\)")
 
 
 def parse_version(text):
@@ -36,6 +38,17 @@ def explain_failure(log_text, upgrade_hint=None):
                     "run: %s" % (name, hint))
         return ("unknown model architecture '%s' \u2192 upgrade your llama.cpp build; "
                 "run: %s" % (name, hint))
+    overflow = None
+    for line in text.splitlines():
+        match = CONTEXT_OVERFLOW_RE.search(line)
+        if match:
+            overflow = match
+    if overflow:
+        requested = int(overflow.group(1))
+        available = int(overflow.group(2))
+        return ("request of %s tokens exceeds the %s-token context \u2192 "
+                "run `llm apply` (or `llm context <model> N`) and restart"
+                % ("{:,}".format(requested), "{:,}".format(available)))
     failure = None
     for line in text.splitlines():
         if "failed to load model" in line:

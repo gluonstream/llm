@@ -8,6 +8,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build.sh"
 
+# Subprocesses inherit this; the built app must not read the real HF cache.
+os.environ.setdefault("LMM_NO_CACHE", "1")
+
 
 def env_for(tmp, **extra):
     env = dict(os.environ)

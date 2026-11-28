@@ -2,14 +2,20 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 
-from . import host
+from . import __version__, host
 
 REPO_URL = "https://github.com/gluonstream/llm.git"
+LAST_VERSION_URL = (
+    "https://raw.githubusercontent.com/gluonstream/llm/"
+    "refs/heads/main/LAST_VERSION.md")
 CHECKOUT_NAME = "llm-update"
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
 class UpdateError(RuntimeError):
@@ -26,6 +32,33 @@ def default_checkout(root=None):
     if configured:
         return Path(configured).expanduser()
     return (Path(root) if root is not None else temp_root()) / CHECKOUT_NAME
+
+
+def _version_tuple(value):
+    match = _VERSION_RE.search(str(value or ""))
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def latest_version(url=LAST_VERSION_URL, opener=urllib.request.urlopen,
+                   timeout=10):
+    """Return the version published in LAST_VERSION.md, or None."""
+    try:
+        with opener(url, timeout=timeout) as response:
+            text = response.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return None
+    match = _VERSION_RE.search(text)
+    return ".".join(match.groups()) if match else None
+
+
+def needs_update(latest, current=__version__):
+    remote = _version_tuple(latest)
+    have = _version_tuple(current)
+    if remote is None or have is None:
+        return False
+    return remote > have
 
 
 def _run(command, cwd=None, runner=subprocess.run):
@@ -62,7 +95,14 @@ def main(argv=None):
         prog="llm update",
         description="Fetch the latest source, build it, and install it.")
     parser.add_argument("--dir", help="checkout directory")
+    parser.add_argument("--force", action="store_true",
+                        help="update even when LAST_VERSION.md is not newer")
     args = parser.parse_args(argv)
+    if not args.force:
+        latest = latest_version()
+        if latest is not None and not needs_update(latest, __version__):
+            print("llm %s is up to date (latest %s)." % (__version__, latest))
+            return 0
     try:
         checkout = update(checkout=args.dir)
     except UpdateError as exc:
