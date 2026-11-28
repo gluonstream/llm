@@ -127,7 +127,7 @@ immediately.
 
 ## Migration
 
-`llm migrate-cache [--dry-run] [--verify] [--keep-old]`:
+`llm migrate-cache [---dry-run] [--verify] [--keep-old]`:
 
 Known mappings (from the manifests/API):
 
@@ -153,7 +153,7 @@ Per file:
    `--keep-old` is absent.
 7. Idempotent: rerunning reports `already present` and does nothing.
 
-`--dry-run` prints the table and changes nothing. `--verify` hashes the source
+`---dry-run` prints the table and changes nothing. `--verify` hashes the source
 and the blob (slow, 36 GB).
 
 ## `llm get`
@@ -177,8 +177,8 @@ No more `~/.local/share/llm/models`.
 
 `llm remove MODEL` deletes only the **exact** named model's files (case-insensitive
 id or alias; prefixes are rejected). It never deletes other quants in the same
-repo. Default is a dry run; `-apply` executes, `-dry-run` is explicit, and passing
-both is an error. `--apply` is the consent; no separate `--force` flag.
+repo. Default is a dry run; `---apply` executes, `---dry-run` is explicit, and passing
+both is an error. `---apply` is the consent; no separate `--force` flag.
 
 - The service is stopped first when the named model is running.
 - All shards of a split set are removed, or the single GGUF.
@@ -229,7 +229,7 @@ both is an error. `--apply` is the consent; no separate `--force` flag.
   models; doctor reports missing/incomplete.
 - `tests/test_hub.py`: `get` creates blobs/refs/snapshots and a profile; no
   writes under `~/.local/share/llm`.
-- Manual: `llm migrate-cache --dry-run`, then apply on this machine; `llm list`
+- Manual: `llm migrate-cache ---dry-run`, then apply on this machine; `llm list`
   shows the three migrated models plus `qwen2.5-coder-14b-instruct-q4_k_m` and
   `qwen3.8-flash-next-gsq-rco-q2_0`; `llm use qwen2.5-7b-instruct` still starts.
 

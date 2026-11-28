@@ -254,7 +254,7 @@ def test_migrate_verify_detects_bad_sha(self)
     # --verify on a corrupted source fails, no snapshot written
 
 def test_migrate_cli_output(self)
-    # ["migrate-cache", "--dry-run"] prints a table with repo/commit/files
+    # ["migrate-cache", "---dry-run"] prints a table with repo/commit/files
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -284,7 +284,7 @@ Expected: `ModuleNotFoundError: No module named 'llm.migrate'`.
 6. write `refs/main` with the commit only when the mapping's `revision` is `main`.
 7. after all files: if `keep_old` is false, `shutil.rmtree(source_dir)`. When deciding whether the directory is fully migrated, ignore the known metadata/lock files `download-manifest.json`, `download.lock`, `.DS_Store`, and any `*.part`; any other leftover keeps the directory and is reported.
 
-`cmd_migrate_cache`: parser flags `--dry-run`, `--verify`, `--keep-old`; print `SOURCE → REPO @ commit` rows and a summary; return 0 unless an error.
+`cmd_migrate_cache`: parser flags `---dry-run`, `--verify`, `--keep-old`; print `SOURCE → REPO @ commit` rows and a summary; return 0 unless an error.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -489,7 +489,7 @@ def test_exact_name_only(self)
 def test_plan_identifies_split_set_and_shared_blobs(self)
     # two quants; plan(q4 split) lists both shards, not q8
 def test_dry_run_is_default(self)
-    # no -apply -> nothing deleted, plan printed
+    # no --apply -> nothing deleted, plan printed
 def test_apply_deletes_only_the_named_quant(self)
     # q4 split removed; q8 snapshot and blob remain; repo dir remains
 def test_apply_keeps_blob_referenced_by_another_snapshot(self)
@@ -501,7 +501,7 @@ def test_apply_user_model_deletes_entry_and_override(self)
 def test_apply_stops_the_running_model(self)
     # running alias matches -> service.stop before deletion
 def test_cli_flags_and_output(self)
-    # -dry-run explicit; -apply prints freed size; -apply + -dry-run is an error
+    # --dry-run explicit; --apply prints freed size; --apply + --dry-run is an error
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -529,12 +529,12 @@ Expected: `ModuleNotFoundError: No module named 'llm.remove'`.
 
 `cmd_remove`:
 - resolve the model by **exact** id or alias only (case-insensitive); a prefix or substring is an error listing exact choices;
-- print the plan; default is dry-run; `-apply` executes; `-dry-run` is explicit;
-- `-apply` and `-dry-run` together is an error;
+- print the plan; default is dry-run; `---apply` executes; `---dry-run` is explicit;
+- `---apply` and `---dry-run` together is an error;
 - print freed bytes and any kept/shared blobs; return 1 on errors.
 
 Parser: `add("remove", cmd_remove, "delete a model's files from the HF cache")`,
-`model`, `-apply`/`--apply`, `-dry-run`/`--dry-run`.
+`model`, `---apply`/`---apply`, `---dry-run`/`---dry-run`.
 
 Bump `__version__` and `LATEST_VERSION` to `1.4.0`; add a README `remove` section.
 
