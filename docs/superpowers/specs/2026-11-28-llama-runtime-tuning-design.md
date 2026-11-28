@@ -52,14 +52,22 @@ prompt-cache reuse, and lets `--fit` preserve a 2 GiB margin.
 
 | Policy | KV K/V | Context candidates | batch/ubatch | cache-reuse | fit |
 |---|---|---|---|---|---|
-| `conservative` | `q8_0` / `q8_0` | 64K | 1024 / 256 | 256 | on, 2048 |
+| `conservative` | `f16` / `f16` | 64K | 1024 / 256 | 256 | on, 2048 |
 | `balanced` (default) | `q8_0` / `q8_0` | 128K, 64K | 2048 / 512 | 256 | on, 2048 |
-| `extended` | `q4_0` / `q4_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
-| `quality` | `f16` / `f16` | 64K | 2048 / 512 | 256 | on, 2048 |
+| `extended` | `q8_0` / `q8_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
+| `aggressive` | `q4_0` / `q4_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
 
 All policies set `flash_attn="on"`, `parallel=1`, `cache_prompt=true`,
-`kv_unified=true`, `no_kv_offload=false`. `quality` is the f16 safety option.
-`extended` trades KV precision for the largest context.
+`kv_unified=true`, `no_kv_offload=false`.
+
+- `conservative` is maximum accuracy / more KV RAM: f16 K and V, 64K.
+- `balanced` cuts KV RAM roughly in half with near-identical perplexity:
+  q8_0 K and V, 64K/128K by memory.
+- `extended` keeps the balanced precision but prefers 128K and larger batches
+  when memory allows.
+- `aggressive` shrinks KV RAM ~70–75% for the largest context, accepting some
+  precision/recall loss: q4_0 K and V. Use `--kv-k q5_0 --kv-v q4_0` for the
+  slightly safer asymmetric variant.
 
 ## Sizing
 
@@ -138,16 +146,17 @@ runtime override to built-in, discovered, and user profiles.
 ## Commands
 
 ```
-llm apply [MODEL...] [--policy conservative|balanced|extended|quality]
-          [--kv TYPE] [--batch N] [--ubatch N] [--fit-target MiB]
+llm apply [MODEL...] [--runtime-policy conservative|balanced|extended|aggressive]
+          [--kv TYPE] [--kv-k TYPE] [--kv-v TYPE] [--batch N] [--ubatch N] [--fit-target MiB]
           [--no-fit] [--no-cache-reuse]
           [--context N] [--dry-run] [--no-restart]
           [--sync-opencode] [--sync-pi] [--sync-clients]
 llm context [MODEL] [TOKENS|auto]
 ```
 
-`--kv TYPE` sets both K and V. Individual `--kv-k`/`--kv-v` are not added; use
-the policy or edit `models.json` for asymmetric cases.
+`--kv TYPE` sets both K and V; `--kv-k TYPE` and `--kv-v TYPE` override
+individually (for example `--kv-k q5_0 --kv-v q4_0`). `--policy` is accepted as
+a hidden alias for `--runtime-policy`.
 
 `apply` prints `MODEL`, `FILE`, `CONTEXT`, `KV`, `BATCH`, `EST. NEEDED`,
 `ACTION`. Example:

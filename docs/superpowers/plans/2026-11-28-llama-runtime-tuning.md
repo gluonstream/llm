@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `llm apply` choose KV precision, Flash Attention, batch/ubatch, prompt-cache reuse, and `--fit` headroom from the model, hardware, and observed usage, with conservative/balanced/extended policies.
+**Goal:** Make `llm apply` choose KV precision, Flash Attention, batch/ubatch, prompt-cache reuse, and `--fit` headroom from the model, hardware, and observed usage, with conservative/balanced/extended/aggressive policies.
 
 **Architecture:** Typed KV math in `gguf`, a usage parser, and a runtime policy layer feed a richer `runtime` block stored beside `context` in `models.json`. `service.server_args` emits only supported flags and forces `-fa on` for quantized KV. `apply` writes context + runtime atomically, restarts on change, and shows both in `apply`/`context`/`doctor`.
 
@@ -111,11 +111,12 @@ git commit -m "feat: add typed KV math and usage-history parsing"
 
 **Interfaces:**
 - Produces:
-  - `runtime.POLICIES` (`conservative`, `balanced`, `extended`, `quality`)
+  - `runtime.POLICIES` (`conservative`, `balanced`, `extended`, `aggressive`)
   - `runtime.policy_runtime(policy="balanced", overrides=None) -> dict`
   - `runtime.candidates_for(policy, observed=None) -> list`
   - `runtime.choose_runtime(model_size, current_context, machine, metadata=None,
-    policy="balanced", observed=None, kv=None, batch=None, ubatch=None,
+    policy="balanced", observed=None, kv=None, kv_k=None, kv_v=None,
+    batch=None, ubatch=None,
     fit_target=None, no_fit=False, no_cache_reuse=False) -> TunedChoice`
   - `@dataclass TunedChoice`: `context`, `runtime`, `reason`, `required`,
     `budget`, `approximate`, `native`
@@ -158,10 +159,10 @@ Expected: missing `llm.runtime` / `set_tuning`.
 - [ ] **Step 3: Implement**
 
 `runtime.POLICIES`:
-- conservative: q8_0/q8_0, [65536], 1024/256, cache-reuse 256, fit 2048.
+- conservative: f16/f16, [65536], 1024/256, cache-reuse 256, fit 2048.
 - balanced: q8_0/q8_0, [131072, 65536], 2048/512.
-- extended: q4_0/q4_0, [131072], 2048/1024.
-- quality: f16/f16, [65536], 2048/512.
+- extended: q8_0/q8_0, [131072], 2048/1024.
+- aggressive: q4_0/q4_0, [131072], 2048/1024.
 All: `flash_attn="on"`, `parallel=1`, `cache_prompt=True`, `cache_reuse=256`,
 `fit=True`, `fit_target=2048`, `kv_unified=True`, `no_kv_offload=False`.
 
@@ -170,8 +171,8 @@ applied on top (used by CLI flags). `candidates_for` filters by
 `observed * 1.5` when observed is truthy; if the filter is empty, returns all.
 
 `choose_runtime`:
-- build runtime from the policy; apply `kv`, `batch`, `ubatch`, `fit_target`,
-  `no_fit`, `no_cache_reuse`;
+- build runtime from the policy; apply `kv`, `kv_k`, `kv_v`, `batch`, `ubatch`,
+  `fit_target`, `no_fit`, `no_cache_reuse`;
 - candidates = `candidates_for(policy, observed)`;
 - call `hardware.choose_context(size, current, machine, metadata,
   candidates=candidates, kv_type_k=..., kv_type_v=...)`;
@@ -289,7 +290,7 @@ git commit -m "feat: emit tuned llama.cpp runtime flags"
 
 ```python
 def test_apply_balanced_writes_runtime_and_context(self)
-def test_apply_policy_conservative_and_extended(self)
+def test_apply_policy_conservative_and_aggressive(self)
 def test_apply_kv_override(self)
 def test_apply_uses_observed_peak(self)
 def test_apply_dry_run_writes_no_runtime(self)
@@ -308,13 +309,15 @@ Expected: unknown flags / missing output.
 - [ ] **Step 3: Implement**
 
 Parser additions:
-`--policy` choices with default `balanced`; `--kv` choices; `--batch`,
+`--runtime-policy` choices with default `balanced` (alias `--policy`); `--kv`,
+`--kv-k`, `--kv-v` choices; `--batch`,
 `--ubatch`, `--fit-target` ints; `--no-fit`, `--no-cache-reuse`.
 
 `cmd_apply`:
 - for each target, `observed = usage.peak_tokens(service.LOG, profile.get("path"))`;
 - `tuned = runtime.choose_runtime(size, profile["context"], machine, metadata,
-  policy=args.policy, observed=observed, kv=args.kv, batch=args.batch,
+  policy=args.runtime_policy, observed=observed, kv=args.kv,
+  kv_k=args.kv_k, kv_v=args.kv_v, batch=args.batch,
   ubatch=args.ubatch, fit_target=args.fit_target, no_fit=args.no_fit,
   no_cache_reuse=args.no_cache_reuse)`;
 - row includes `kv`, `batch`, `ubatch`, `context`, `required`, `action`;
@@ -358,7 +361,7 @@ Set `__version__` and `LATEST_VERSION` to `1.3.0`.
 
 - [ ] **Step 2: README**
 
-Add a "Runtime tuning" section: policies table, `apply --policy/--kv/--batch/
+Add a "Runtime tuning" section: policies table, `apply --runtime-policy/--kv/--kv-k/--kv-v/--batch/
 --ubatch/--fit-target/--no-fit/--no-cache-reuse`, the `q8_0`/`q4_0` memory
 story, `-fa on` requirement, usage-history sizing, and the `--fit` margin.
 Include the example command from the spec.
@@ -374,8 +377,8 @@ Run: `LMM_SKIP_LLAMA_CPP_UPGRADE=1 ./build.sh`; `Built .../dist/llm`.
 
 ```bash
 ./dist/llm apply --dry-run
-./dist/llm apply --dry-run --policy extended
-./dist/llm apply --dry-run --kv q4_0
+./dist/llm apply --dry-run --runtime-policy extended
+./dist/llm apply --dry-run --runtime-policy aggressive
 ```
 
 Expected: balanced moves qwen to 128K and Inkling/GLM to 64K with q8_0;
