@@ -98,21 +98,55 @@ def _context_cell(row):
     return cell
 
 
+def runtime_summary(runtime):
+    """Summarize a runtime block as `q8_0 KV · 2048/512 · fit 2048 · cache-reuse 256`."""
+    runtime = runtime or {}
+    kv_k = runtime.get("kv_type_k", "f16")
+    kv_v = runtime.get("kv_type_v", "f16")
+    kv = kv_k if kv_k == kv_v else "%s/%s" % (kv_k, kv_v)
+    parts = ["%s KV" % kv]
+    parts.append("%s/%s" % (runtime.get("batch", 512), runtime.get("ubatch", 256)))
+    if runtime.get("fit"):
+        parts.append("fit %s" % runtime.get("fit_target", 2048))
+    else:
+        parts.append("no-fit")
+    parts.append("cache-reuse %s" % runtime.get("cache_reuse", 0))
+    return " \u00b7 ".join(parts)
+
+
+def _kv_cell(row):
+    return row.get("kv") or ""
+
+
+def _batch_cell(row):
+    batch = row.get("batch")
+    ubatch = row.get("ubatch")
+    if batch is None or ubatch is None:
+        return ""
+    return "%s/%s" % (batch, ubatch)
+
+
 def format_apply(rows):
-    """Render the `apply` table: MODEL, FILE, CONTEXT, EST. NEEDED, ACTION."""
+    """Render the `apply` table: MODEL, FILE, CONTEXT, KV, BATCH, EST. NEEDED, ACTION."""
     rows = list(rows)
-    cells = [_context_cell(row) for row in rows]
-    context_width = max([len("CONTEXT")] + [len(cell) for cell in cells])
-    lines = ["  %-*s  %*s  %-*s  %*s  %s" % (
+    context_cells = [_context_cell(row) for row in rows]
+    kv_cells = [_kv_cell(row) for row in rows]
+    batch_cells = [_batch_cell(row) for row in rows]
+    context_width = max([len("CONTEXT")] + [len(cell) for cell in context_cells])
+    kv_width = max([len("KV")] + [len(cell) for cell in kv_cells])
+    batch_width = max([len("BATCH")] + [len(cell) for cell in batch_cells])
+    lines = ["  %-*s  %*s  %-*s  %-*s  %-*s  %*s  %s" % (
         MODEL_WIDTH, "MODEL", FILE_WIDTH, "FILE", context_width, "CONTEXT",
+        kv_width, "KV", batch_width, "BATCH",
         NEEDED_WIDTH, "EST. NEEDED", "ACTION")]
-    for row, cell in zip(rows, cells):
+    for row, context_cell, kv_cell, batch_cell in zip(
+            rows, context_cells, kv_cells, batch_cells):
         size = row.get("size")
         file_cell = "missing" if size is None else human_size(size)
         required = row.get("required")
         needed_cell = "" if required is None else human_size(required)
-        lines.append("  %-*s  %*s  %-*s  %*s  %s" % (
+        lines.append("  %-*s  %*s  %-*s  %-*s  %-*s  %*s  %s" % (
             MODEL_WIDTH, row.get("model", ""), FILE_WIDTH, file_cell,
-            context_width, cell, NEEDED_WIDTH, needed_cell,
-            row.get("action", "")))
+            context_width, context_cell, kv_width, kv_cell, batch_width,
+            batch_cell, NEEDED_WIDTH, needed_cell, row.get("action", "")))
     return "\n".join(lines)

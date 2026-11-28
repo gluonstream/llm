@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from . import (config, diagnose, gguf, hardware, hfcache, host, hub, migrate,
-               opencode, pi, render, service, update)
+               opencode, pi, render, runtime, service, update, usage)
 
 _subparsers = {}
 # Legacy download location. `get` writes the Hugging Face cache instead, but
@@ -102,6 +102,7 @@ def cmd_context(args):
     if args.tokens is None:
         print("%s: %s (%s)" % (alias, render.short_context(context),
                                config.context_source(profile_id)))
+        print(render.runtime_summary(profile.get("runtime")))
         return 0
 
     if args.tokens == "auto":
@@ -199,6 +200,7 @@ def cmd_apply(args):
         name = profile.get("alias") or model_id
         size = _local_size(profile)
         old = profile.get("context")
+        old_runtime = profile.get("runtime") or {}
         if size is None:
             rows.append({
                 "model": name, "size": None, "old": old, "new": old,
@@ -208,22 +210,34 @@ def cmd_apply(args):
             continue
         metadata = (gguf.read_metadata(profile["path"])
                     if profile.get("path") else None)
-        choice = hardware.choose_context(size, old, machine, metadata,
-                                         ceiling=args.context)
-        new = choice.context
-        if new != old:
+        observed = usage.peak_tokens(service.LOG, profile.get("path"))
+        tuned = runtime.choose_runtime(
+            size, old, machine, metadata,
+            policy=args.runtime_policy, observed=observed, kv=args.kv,
+            kv_k=args.kv_k, kv_v=args.kv_v, batch=args.batch,
+            ubatch=args.ubatch, fit_target=args.fit_target,
+            no_fit=args.no_fit, no_cache_reuse=args.no_cache_reuse,
+            ceiling=args.context)
+        new = tuned.context
+        new_runtime = tuned.runtime
+        kv_k = new_runtime["kv_type_k"]
+        kv_v = new_runtime["kv_type_v"]
+        kv = kv_k if kv_k == kv_v else "%s/%s" % (kv_k, kv_v)
+        if new != old or new_runtime != old_runtime:
             action = "updated"
             changed_ids.append(model_id)
-        elif choice.reason.startswith("fits"):
+        elif tuned.reason.startswith("fits"):
             action = "kept"
         else:
-            action = "kept (%s)" % choice.reason
+            action = "kept (%s)" % tuned.reason
         rows.append({
             "model": name, "size": size, "old": old, "new": new,
-            "required": choice.required, "action": action,
-            "approximate": choice.approximate, "native": choice.native,
+            "kv": kv, "batch": new_runtime["batch"],
+            "ubatch": new_runtime["ubatch"],
+            "required": tuned.required, "action": action,
+            "approximate": tuned.approximate, "native": tuned.native,
         })
-        chosen[model_id] = new
+        chosen[model_id] = (new, new_runtime)
 
     print(render.format_apply(rows))
 
@@ -233,7 +247,7 @@ def cmd_apply(args):
         for model_id in target_ids
         if _local_size(config.PROFILES[model_id]) is not None
     }
-    for model_id, new in chosen.items():
+    for model_id, (new, _new_runtime) in chosen.items():
         if model_id in installed:
             installed[model_id]["context"] = new
 
@@ -243,7 +257,8 @@ def cmd_apply(args):
 
     with service.locked():
         for model_id in changed_ids:
-            config.set_context(model_id, chosen[model_id])
+            new, new_runtime = chosen[model_id]
+            config.set_tuning(model_id, new, new_runtime)
         config.reload_profiles()
         _sync_clients(args, installed, dry_run=False)
 
@@ -260,7 +275,7 @@ def cmd_apply(args):
             if ((actual is not None and actual != expected)
                     or running_id in changed_ids):
                 if args.no_restart:
-                    print("context changed; run llm restart")
+                    print("tuning changed; run llm restart")
                 else:
                     service.stop()
                     pid, created, profile = service.start()
@@ -628,6 +643,16 @@ def cmd_doctor(args):
             source, note))
 
     print()
+    try:
+        selected = config.selected_profile()
+    except config.ModelError:
+        selected = None
+    if selected and selected.get("runtime"):
+        peak = usage.peak_tokens(service.LOG, selected.get("path"))
+        line = "Runtime:      %s" % render.runtime_summary(selected["runtime"])
+        if peak:
+            line += " \u00b7 peak %s" % render.short_context(peak)
+        print(line)
     pid = service.running()
     ready = service.healthy() if pid else False
     if pid:
@@ -755,6 +780,18 @@ def build_parser(prog=None):
     command.add_argument("--sync-opencode", action="store_true")
     command.add_argument("--sync-pi", action="store_true")
     command.add_argument("--sync-clients", action="store_true")
+    command.add_argument("--runtime-policy", "--policy", dest="runtime_policy",
+                         choices=("conservative", "balanced", "extended",
+                                  "aggressive"),
+                         default="balanced")
+    command.add_argument("--kv", choices=sorted(gguf.KV_BYTES_PER_ELEMENT))
+    command.add_argument("--kv-k", choices=sorted(gguf.KV_BYTES_PER_ELEMENT))
+    command.add_argument("--kv-v", choices=sorted(gguf.KV_BYTES_PER_ELEMENT))
+    command.add_argument("--batch", type=int)
+    command.add_argument("--ubatch", type=int)
+    command.add_argument("--fit-target", type=int)
+    command.add_argument("--no-fit", action="store_true")
+    command.add_argument("--no-cache-reuse", action="store_true")
     command = add("use", cmd_use, "select a model; restart the service if it is running")
     command.add_argument("model")
     command = add("start", cmd_start, "start the selected model")

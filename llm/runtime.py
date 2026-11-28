@@ -91,7 +91,8 @@ def candidates_for(policy="balanced", observed=None):
 def choose_runtime(model_size, current_context, machine, metadata=None,
                    policy="balanced", observed=None, kv=None, kv_k=None,
                    kv_v=None, batch=None, ubatch=None,
-                   fit_target=None, no_fit=False, no_cache_reuse=False):
+                   fit_target=None, no_fit=False, no_cache_reuse=False,
+                   ceiling=None):
     """Pick a context and runtime together, returning a TunedChoice."""
     overrides = {}
     if kv is not None:
@@ -115,7 +116,7 @@ def choose_runtime(model_size, current_context, machine, metadata=None,
     candidates = candidates_for(policy, observed)
     choice = hardware.choose_context(
         model_size, current_context, machine, metadata,
-        candidates=candidates,
+        candidates=candidates, ceiling=ceiling,
         kv_type_k=runtime["kv_type_k"], kv_type_v=runtime["kv_type_v"])
     return TunedChoice(
         context=choice.context,

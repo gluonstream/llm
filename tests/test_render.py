@@ -91,3 +91,45 @@ class RenderTest(unittest.TestCase):
         text = render.format_apply(rows)
         self.assertIn("approx", text)
         self.assertIn("beyond native 32K", text)
+
+    def test_runtime_summary(self):
+        runtime = {
+            "kv_type_k": "q8_0", "kv_type_v": "q8_0", "flash_attn": "on",
+            "batch": 2048, "ubatch": 512, "parallel": 1, "cache_prompt": True,
+            "cache_reuse": 256, "fit": True, "fit_target": 2048,
+            "kv_unified": True, "no_kv_offload": False,
+        }
+        self.assertEqual(
+            render.runtime_summary(runtime),
+            "q8_0 KV \u00b7 2048/512 \u00b7 fit 2048 \u00b7 cache-reuse 256")
+
+    def test_runtime_summary_asymmetric_and_off(self):
+        runtime = {
+            "kv_type_k": "q5_0", "kv_type_v": "q4_0",
+            "batch": 1024, "ubatch": 256, "fit": False, "cache_reuse": 0,
+        }
+        text = render.runtime_summary(runtime)
+        self.assertIn("q5_0/q4_0 KV", text)
+        self.assertIn("1024/256", text)
+        self.assertIn("no-fit", text)
+        self.assertIn("cache-reuse 0", text)
+
+    def test_format_apply_includes_kv_and_batch(self):
+        rows = [{"model": "qwen", "size": 17629760736, "old": 8192,
+                 "new": 131072, "required": 30000000000, "action": "updated",
+                 "approximate": False, "native": None,
+                 "kv": "q8_0", "batch": 2048, "ubatch": 512}]
+        text = render.format_apply(rows)
+        self.assertIn("KV", text)
+        self.assertIn("BATCH", text)
+        self.assertIn("q8_0", text)
+        self.assertIn("2048/512", text)
+
+    def test_format_apply_missing_has_empty_kv_and_batch(self):
+        rows = [{"model": "gone", "size": None, "old": 8192, "new": 8192,
+                 "required": None, "action": "missing", "approximate": False,
+                 "native": None}]
+        text = render.format_apply(rows)
+        self.assertIn("KV", text)
+        self.assertIn("BATCH", text)
+        self.assertIn("missing", text)

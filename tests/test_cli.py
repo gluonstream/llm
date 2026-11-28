@@ -17,7 +17,7 @@ from unittest import mock
 # does not run tests/__init__.py.
 os.environ.setdefault("LMM_NO_CACHE", "1")
 
-from llm import cli, config, hardware, hub, service
+from llm import cli, config, hardware, hub, runtime, service
 
 
 def run_cli(argv, locked=None):
@@ -720,6 +720,26 @@ class DoctorCliTest(unittest.TestCase):
         self.assertIn("cache", text)
         self.assertIn("user", text)
 
+    def test_doctor_shows_runtime_and_peak(self):
+        selected = {
+            "id": "qwen", "alias": "qwen", "context": 131072,
+            "path": "/nonexistent/qwen.gguf", "sampling": {},
+            "runtime": {
+                "kv_type_k": "q8_0", "kv_type_v": "q8_0", "flash_attn": "on",
+                "batch": 2048, "ubatch": 512, "parallel": 1,
+                "cache_prompt": True, "cache_reuse": 256, "fit": True,
+                "fit_target": 2048, "kv_unified": True, "no_kv_offload": False,
+            },
+        }
+        with mock.patch.object(cli.usage, "peak_tokens", return_value=4096):
+            text = self._doctor(selected=selected)
+        self.assertIn("Runtime:", text)
+        self.assertIn("q8_0 KV", text)
+        self.assertIn("2048/512", text)
+        self.assertIn("fit 2048", text)
+        self.assertIn("cache-reuse 256", text)
+        self.assertIn("peak 4K", text)
+
 
 class ContextCliTest(unittest.TestCase):
     GIB = 1024 ** 3
@@ -842,6 +862,29 @@ class ContextCliTest(unittest.TestCase):
             self.assertFalse(models.exists())
             self.assertIn("positive integer", err)
 
+    def test_context_shows_runtime_summary(self):
+        profiles = {
+            "m": {
+                "id": "m", "alias": "m", "path": "/x/m.gguf",
+                "context": 131072, "sampling": {},
+                "runtime": {
+                    "kv_type_k": "q8_0", "kv_type_v": "q8_0",
+                    "batch": 2048, "ubatch": 512, "fit": True,
+                    "fit_target": 2048, "cache_reuse": 256,
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", profiles):
+                code, out, _ = self._run(["context", "m"])
+        self.assertEqual(code, 0)
+        self.assertIn("q8_0 KV", out)
+        self.assertIn("2048/512", out)
+        self.assertIn("fit 2048", out)
+        self.assertIn("cache-reuse 256", out)
+
 
 class ApplyCliTest(unittest.TestCase):
     GIB = 1024 ** 3
@@ -865,7 +908,7 @@ class ApplyCliTest(unittest.TestCase):
 
     def _apply(self, argv, profiles, size_map, machine, running=None,
                server_context=None, identity="", sync_openencode=None,
-               sync_pi=None, start_result=None):
+               sync_pi=None, start_result=None, peak=None, choose_runtime=None):
         out = io.StringIO()
         err = io.StringIO()
 
@@ -883,7 +926,12 @@ class ApplyCliTest(unittest.TestCase):
             "oc_sync": mock.patch.object(cli.opencode, "sync",
                                          return_value=sync_openencode),
             "pi_sync": mock.patch.object(cli.pi, "sync", return_value=sync_pi),
+            "peak_tokens": mock.patch.object(cli.usage, "peak_tokens",
+                                             return_value=peak),
         }
+        if choose_runtime is not None:
+            patches["choose_runtime"] = mock.patch.object(
+                cli.runtime, "choose_runtime", return_value=choose_runtime)
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(config, "migrate_state",
                                                   return_value=False))
@@ -1064,3 +1112,130 @@ class ApplyCliTest(unittest.TestCase):
         code, _, err = self._apply(["apply", "gone"], profiles, {}, machine)
         self.assertEqual(code, 1)
         self.assertIn("not installed", err)
+
+    def _choice(self, context=131072, runtime_dict=None, reason="fits",
+                required=30000000000, budget=None, approximate=False,
+                native=None):
+        if runtime_dict is None:
+            runtime_dict = {
+                "kv_type_k": "q8_0", "kv_type_v": "q8_0", "flash_attn": "on",
+                "batch": 2048, "ubatch": 512, "parallel": 1,
+                "cache_prompt": True, "cache_reuse": 256, "fit": True,
+                "fit_target": 2048, "kv_unified": True, "no_kv_offload": False,
+            }
+        return runtime.TunedChoice(context, runtime_dict, reason, required,
+                                   budget, approximate, native)
+
+    def test_apply_balanced_writes_runtime_and_context(self):
+        machine = self._machine()
+        choice = self._choice()
+        code, out, _ = self._apply(
+            ["apply", "qwen2.5-7b-instruct"], dict(config.PROFILES),
+            {config.DEFAULT: 4 * self.GIB}, machine, choose_runtime=choice)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        override = data["overrides"][config.DEFAULT]
+        self.assertEqual(override["context"], 131072)
+        self.assertEqual(override["runtime"]["kv_type_k"], "q8_0")
+        self.assertEqual(override["runtime"]["batch"], 2048)
+        self.assertIn("q8_0", out)
+        self.assertIn("2048/512", out)
+
+    def test_apply_policy_conservative_and_aggressive(self):
+        machine = self._machine()
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}, "repo": "o/r",
+                  "filename": "m.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--runtime-policy", "conservative"], profiles,
+            {"m": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        self.assertEqual(data["overrides"]["m"]["runtime"]["kv_type_k"], "f16")
+
+        code, _, _ = self._apply(
+            ["apply", "--policy", "aggressive"], profiles,
+            {"m": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        self.assertEqual(data["overrides"]["m"]["runtime"]["kv_type_k"], "q4_0")
+
+    def test_apply_kv_override(self):
+        machine = self._machine()
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}, "repo": "o/r",
+                  "filename": "m.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--kv", "q5_1"], profiles, {"m": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        self.assertEqual(data["overrides"]["m"]["runtime"]["kv_type_k"], "q5_1")
+        self.assertEqual(data["overrides"]["m"]["runtime"]["kv_type_v"], "q5_1")
+
+    def test_apply_uses_observed_peak(self):
+        machine = self._machine()
+        choice = self._choice()
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}, "repo": "o/r",
+                  "filename": "m.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply"], profiles, {"m": 4 * self.GIB}, machine,
+            peak=40000, choose_runtime=choice)
+        self.assertEqual(code, 0)
+        kwargs = self._mocks["choose_runtime"].call_args.kwargs
+        self.assertEqual(kwargs["observed"], 40000)
+        self.assertEqual(kwargs["policy"], "balanced")
+
+    def test_apply_dry_run_writes_no_runtime(self):
+        machine = self._machine()
+        choice = self._choice()
+        with mock.patch.object(config, "set_tuning") as set_tuning:
+            code, _, _ = self._apply(
+                ["apply", "--dry-run"], dict(config.PROFILES),
+                {config.DEFAULT: 4 * self.GIB}, machine, choose_runtime=choice)
+        self.assertEqual(code, 0)
+        set_tuning.assert_not_called()
+        self.assertFalse(self.models.exists())
+
+    def test_apply_restarts_on_runtime_change(self):
+        machine = self._machine(total_ram=128 * self.GIB,
+                                available_ram=128 * self.GIB)
+        profiles = {
+            config.DEFAULT: dict(config.PROFILES[config.DEFAULT], context=131072),
+        }
+        choice = self._choice(context=131072)
+        identity = ("llama-server -m /x.gguf "
+                    "--alias qwen2.5-7b-instruct-graphify --port 18081")
+        code, out, _ = self._apply(
+            ["apply", "qwen2.5-7b-instruct"], profiles,
+            {config.DEFAULT: 4 * self.GIB}, machine,
+            running=123, server_context=131072, identity=identity,
+            start_result=(4242, True, {"alias": "qwen", "id": config.DEFAULT}),
+            choose_runtime=choice)
+        self.assertEqual(code, 0)
+        self._mocks["stop"].assert_called_once()
+        self._mocks["start"].assert_called_once()
+        self._mocks["wait_ready"].assert_called_once()
+        self.assertIn("restarted PID 4242", out)
+
+    def test_apply_no_cache_reuse_and_no_fit(self):
+        machine = self._machine()
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}, "repo": "o/r",
+                  "filename": "m.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--no-fit", "--no-cache-reuse"], profiles,
+            {"m": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        tuned = data["overrides"]["m"]["runtime"]
+        self.assertFalse(tuned["fit"])
+        self.assertEqual(tuned["cache_reuse"], 0)
