@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import socket
 import subprocess
@@ -117,15 +118,88 @@ def is_expected_listener(pid, profile=None):
             and "--host 127.0.0.1" in actual)
 
 
-def server_args(profile, llama_server=None):
+_SHORT_FLAG = re.compile(r"-[a-z]+$")
+
+
+def parse_help(text):
+    """Return the set of flags advertised in a ``--help`` dump.
+
+    Collects every token starting with ``--`` (long flags) and every token
+    matching ``-[a-z]+`` (short flags), stripping trailing commas so lines
+    like ``-ctk, --cache-type-k TYPE`` yield both forms.
+    """
+    flags = set()
+    for line in (text or "").splitlines():
+        for token in line.split():
+            token = token.rstrip(",")
+            if token.startswith("--"):
+                flags.add(token)
+            elif _SHORT_FLAG.fullmatch(token):
+                flags.add(token)
+    return flags
+
+
+_SUPPORT_CACHE = {}
+
+
+def supported_flags(llama_server=None):
+    """Return the flags the given llama-server build supports.
+
+    Runs ``llama-server --help`` once per binary path (cached) and returns the
+    empty set when the binary is missing or the help cannot be read.
+    """
+    server = llama_server or config.LLAMA_SERVER
+    cached = _SUPPORT_CACHE.get(server)
+    if cached is not None:
+        return cached
+    flags = set()
+    try:
+        result = subprocess.run(
+            [server, "--help"], capture_output=True, text=True,
+            check=False, timeout=5)
+        flags = parse_help((result.stdout or "") + "\n" + (result.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        flags = set()
+    _SUPPORT_CACHE[server] = flags
+    return flags
+
+
+def server_args(profile, llama_server=None, supported=None):
     args = [llama_server or config.LLAMA_SERVER]
     if "path" in profile:
         args += ["-m", profile["path"], "--offline", "-lm", "mmap", "--lazy-mode", "on"]
     else:
         args += ["-hf", profile["hf"]]
-    args += ["--no-mmproj", "-ngl", "99", "-fa", "on",
-             "-c", str(profile["context"]), "-b", "512", "-ub", "256",
-             "--parallel", "1", "--host", "127.0.0.1", "--port", str(PORT),
+    args += ["--no-mmproj", "-ngl", "99"]
+    if supported is None:
+        supported = supported_flags(llama_server)
+    rt = profile.get("runtime") or {}
+    kv_type_k = rt.get("kv_type_k", "f16")
+    kv_type_v = rt.get("kv_type_v", "f16")
+    if ((kv_type_k != "f16" or kv_type_v != "f16")
+            and "-ctk" in supported and "-ctv" in supported):
+        args += ["-ctk", kv_type_k, "-ctv", kv_type_v, "-fa", "on"]
+    else:
+        args += ["-fa", rt.get("flash_attn", "on")]
+    args += ["-c", str(profile["context"]),
+             "-b", str(rt.get("batch", 512)),
+             "-ub", str(rt.get("ubatch", 256)),
+             "--parallel", str(rt.get("parallel", 1))]
+    if rt.get("kv_unified") and "-kvu" in supported:
+        args += ["-kvu"]
+    if "runtime" in profile and ("--cache-prompt" in supported
+                                 or "--no-cache-prompt" in supported):
+        if rt.get("cache_prompt", True):
+            args += ["--cache-prompt"]
+        else:
+            args += ["--no-cache-prompt"]
+    if rt.get("cache_reuse") and "--cache-reuse" in supported:
+        args += ["--cache-reuse", str(rt["cache_reuse"])]
+    if rt.get("fit") and "--fit" in supported and "--fit-target" in supported:
+        args += ["--fit", "on", "--fit-target", str(rt.get("fit_target", 2048))]
+    if rt.get("no_kv_offload") and "--no-kv-offload" in supported:
+        args += ["--no-kv-offload"]
+    args += ["--host", "127.0.0.1", "--port", str(PORT),
              "--alias", profile["alias"], "--jinja", "--no-webui"]
     if profile["id"] == "qwen2.5-7b-instruct-q4-k-m":
         args += ["--reasoning", "off"]
