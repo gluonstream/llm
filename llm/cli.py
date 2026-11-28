@@ -6,8 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import (config, diagnose, gguf, hardware, hfcache, host, hub, migrate,
-               opencode, pi, render, runtime, service, update, usage)
+from . import (analysis, config, diagnose, gguf, hardware, hfcache, host, hub,
+               migrate, opencode, pi, render, runtime, service, update, usage)
 
 _subparsers = {}
 # Legacy download location. `get` writes the Hugging Face cache instead, but
@@ -151,6 +151,13 @@ def cmd_context(args):
         config.set_context(profile_id, value)
         config.reload_profiles()
         print("%s: %s" % (alias, render.short_context(value)))
+    return 0
+
+
+def cmd_analyze(args):
+    machine = hardware.detect_hardware(models_dir=hfcache.cache_root())
+    rows = analysis.rows(config.PROFILES, context=args.context, machine=machine)
+    print(render.format_analysis(rows, args.context))
     return 0
 
 
@@ -771,6 +778,8 @@ def build_parser(prog=None):
     command.add_argument("model", nargs="?")
     command.add_argument("tokens", nargs="?")
     command.add_argument("--dry-run", action="store_true")
+    command = add("analyze", cmd_analyze, "show KV memory for every cached model")
+    command.add_argument("--context", type=int, default=65536)
     command = add("apply", cmd_apply,
                   "size context for installed models and write models.json")
     command.add_argument("models", nargs="*")

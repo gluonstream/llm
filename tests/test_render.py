@@ -133,3 +133,23 @@ class RenderTest(unittest.TestCase):
         self.assertIn("KV", text)
         self.assertIn("BATCH", text)
         self.assertIn("missing", text)
+
+    def test_format_analysis_columns(self):
+        rows = [{"model": "qwen", "alias": "qwen", "size": 3_758_096_384,
+                 "context": 65536, "f16": 3_758_096_384,
+                 "q8_0": 1_996_488_704, "q4_0": 1_056_964_608,
+                 "saving": 0.46875, "fits": True, "native": 32768}]
+        text = render.format_analysis(rows, 65536)
+        for column in ("MODEL", "SIZE", "CONTEXT", "f16", "q8_0", "q4_0",
+                       "SAVE", "FIT"):
+            self.assertIn(column, text)
+        self.assertIn("46.9%", text)
+        self.assertIn("yes", text)
+        self.assertIn("beyond native 32K", text)
+
+    def test_format_analysis_renders_dashes(self):
+        rows = [{"model": "gone", "alias": "gone", "size": None,
+                 "context": 65536, "f16": None, "q8_0": None, "q4_0": None,
+                 "saving": None, "fits": None, "native": None}]
+        text = render.format_analysis(rows, 65536)
+        self.assertIn("-", text)

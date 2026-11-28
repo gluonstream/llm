@@ -150,3 +150,64 @@ def format_apply(rows):
             context_width, context_cell, kv_width, kv_cell, batch_width,
             batch_cell, NEEDED_WIDTH, needed_cell, row.get("action", "")))
     return "\n".join(lines)
+
+
+def _analysis_size_cell(value):
+    return human_size(value) if value is not None else "-"
+
+
+def _analysis_saving_cell(saving):
+    return "%.1f%%" % (saving * 100) if saving is not None else "-"
+
+
+def _analysis_fit_cell(fits):
+    if fits is True:
+        return "yes"
+    if fits is False:
+        return "no"
+    return "-"
+
+
+def _analysis_context_cell(row, context):
+    cell = short_context(context)
+    native = row.get("native")
+    if native is not None and context is not None and context > native:
+        cell += " \u00b7 beyond native %s" % short_context(native)
+    return cell
+
+
+def format_analysis(rows, context):
+    """Render the `analyze` table: MODEL, SIZE, CONTEXT, f16, q8_0, q4_0, SAVE, FIT."""
+    rows = list(rows)
+    names = [row.get("alias") or row.get("model") or "" for row in rows]
+    sizes = [_analysis_size_cell(row.get("size")) for row in rows]
+    contexts = [_analysis_context_cell(row, context) for row in rows]
+    f16s = [_analysis_size_cell(row.get("f16")) for row in rows]
+    q8s = [_analysis_size_cell(row.get("q8_0")) for row in rows]
+    q4s = [_analysis_size_cell(row.get("q4_0")) for row in rows]
+    savings = [_analysis_saving_cell(row.get("saving")) for row in rows]
+    fits = [_analysis_fit_cell(row.get("fits")) for row in rows]
+
+    def width(title, cells):
+        return max([len(title)] + [len(cell) for cell in cells])
+
+    name_width = width("MODEL", names)
+    size_width = width("SIZE", sizes)
+    context_width = width("CONTEXT", contexts)
+    f16_width = width("f16", f16s)
+    q8_width = width("q8_0", q8s)
+    q4_width = width("q4_0", q4s)
+    save_width = width("SAVE", savings)
+    fit_width = width("FIT", fits)
+
+    lines = ["  %-*s  %*s  %-*s  %*s  %*s  %*s  %*s  %-*s" % (
+        name_width, "MODEL", size_width, "SIZE", context_width, "CONTEXT",
+        f16_width, "f16", q8_width, "q8_0", q4_width, "q4_0",
+        save_width, "SAVE", fit_width, "FIT")]
+    for name, size, ctx, f16, q8, q4, saving, fit in zip(
+            names, sizes, contexts, f16s, q8s, q4s, savings, fits):
+        lines.append("  %-*s  %*s  %-*s  %*s  %*s  %*s  %*s  %-*s" % (
+            name_width, name, size_width, size, context_width, ctx,
+            f16_width, f16, q8_width, q8, q4_width, q4,
+            save_width, saving, fit_width, fit))
+    return "\n".join(lines)

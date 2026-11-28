@@ -1239,3 +1239,29 @@ class ApplyCliTest(unittest.TestCase):
         tuned = data["overrides"]["m"]["runtime"]
         self.assertFalse(tuned["fit"])
         self.assertEqual(tuned["cache_reuse"], 0)
+
+
+class AnalyzeCliTest(unittest.TestCase):
+    def test_analyze_cli_context_override(self):
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}},
+        }
+        captured = {}
+
+        def fake_rows(profiles, context=65536, machine=None):
+            captured["context"] = context
+            return [{"model": "m", "alias": "m", "size": None,
+                     "context": context, "f16": None, "q8_0": None,
+                     "q4_0": None, "saving": None, "fits": None,
+                     "native": None}]
+
+        out = io.StringIO()
+        with mock.patch.object(config, "PROFILES", profiles), \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             mock.patch.object(cli.hardware, "detect_hardware"), \
+             mock.patch.object(cli.analysis, "rows", side_effect=fake_rows), \
+             redirect_stdout(out), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["analyze", "--context", "131072"]), 0)
+        self.assertEqual(captured["context"], 131072)
+        self.assertIn("128K", out.getvalue())
