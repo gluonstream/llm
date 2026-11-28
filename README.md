@@ -121,7 +121,7 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 | --- | --- |
 | `llm list` | List models, their size, and which one is selected/running. |
 | `llm status` | Show the selected model, service health, and endpoint. |
-| `llm use <model>` | Select a model; restart the service if it is running. |
+| `llm use <model> [--context-size N]` | Select a model; restart the service if it is running. |
 | `llm start [--no-wait]` | Start the selected model and wait until healthy. |
 | `llm stop` | Stop the model service. |
 | `llm restart` | Restart the model service. |
@@ -175,6 +175,16 @@ llm logs -f
 it on the new model. `llm start` waits for the health endpoint before
 returning; use `--no-wait` for scripts that prefer to poll themselves.
 
+By default the context size adapts to the memory that constrains the model:
+VRAM on a discrete GPU, unified RAM on Apple Silicon, and system RAM on a
+CPU-only host. Up to 12 GiB gets 32k, larger machines get 64k, and more than
+128 GiB gets 128k. Override it for one selection with:
+
+```sh
+llm use qwen2.5-7b-instruct --context-size 32768
+llm use qwen2.5-7b-instruct   # back to the hardware default
+```
+
 ### Searching and downloading models
 
 ```sh
@@ -213,10 +223,10 @@ and exits without downloading:
 Use --force to download anyway; the model may fail to load.
 ```
 
-`--force` bypasses the refusal and downloads anyway. `--context` changes the
-context size used for the estimate (and stored with the model), and
-`--requires-llama-cpp VERSION` records a minimum llama.cpp version that
-`llm doctor` reports against.
+`--force` bypasses the refusal and downloads anyway. By default `get` stores
+the context size recommended for the detected hardware; `--context` overrides
+it and stores a fixed value. `--requires-llama-cpp VERSION` records a minimum
+llama.cpp version that `llm doctor` reports against.
 
 ### Model storage and discovery
 

@@ -9,7 +9,7 @@ from unittest import mock
 # does not run tests/__init__.py.
 os.environ.setdefault("LMM_NO_CACHE", "1")
 
-from llm import config
+from llm import config, hardware
 
 COMMIT = "a" * 40
 
@@ -62,6 +62,41 @@ class SelectionTest(unittest.TestCase):
                              "inkling-2-mini-gguf-ud-q4-k-xl")
             self.assertEqual(json.loads(selection.read_text())["model"],
                              "inkling-2-mini-gguf-ud-q4-k-xl")
+
+
+class SelectionContextTest(unittest.TestCase):
+    def test_select_persists_context_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            selection = Path(tmp) / "selected-model.json"
+            config.select_profile("inkling", selection=selection, context=16384)
+            self.assertEqual(json.loads(selection.read_text()),
+                             {"model": "inkling-2-mini-gguf-ud-q4-k-xl",
+                              "context": 16384})
+            profile = config.selected_profile(selection=selection)
+            self.assertEqual(profile["context"], 16384)
+            self.assertFalse(profile["context_auto"])
+
+    def test_select_without_context_clears_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            selection = Path(tmp) / "selected-model.json"
+            config.select_profile("inkling", selection=selection, context=16384)
+            config.select_profile("inkling", selection=selection)
+            self.assertEqual(json.loads(selection.read_text()),
+                             {"model": "inkling-2-mini-gguf-ud-q4-k-xl"})
+
+    def test_effective_context_uses_recommended_for_auto_profile(self):
+        machine = hardware.Hardware(chip="x", model="x", total_ram=12 * hardware.GIB,
+                                    unified=True, gpu="x", vram=None,
+                                    disk_free=100 * hardware.GIB)
+        profile = {"id": "x", "context": 8192, "context_auto": True}
+        self.assertEqual(config.effective_context(profile, machine=machine), 32768)
+
+    def test_effective_context_keeps_manual_profile(self):
+        machine = hardware.Hardware(chip="x", model="x", total_ram=128 * hardware.GIB,
+                                    unified=True, gpu="x", vram=None,
+                                    disk_free=100 * hardware.GIB)
+        profile = {"id": "x", "context": 4096}
+        self.assertEqual(config.effective_context(profile, machine=machine), 4096)
 
 
 class MigrationTest(unittest.TestCase):

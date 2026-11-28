@@ -335,7 +335,7 @@ def cmd_use(args):
     profile = config.resolve_model(args.model)
     with service.locked():
         was_running = service.running() is not None
-        config.select_profile(profile["id"])
+        config.select_profile(profile["id"], context=args.context_size)
         if was_running:
             service.stop()
             pid, created, started = service.start(profile["id"])
@@ -474,9 +474,16 @@ def cmd_get(args):
                 raise config.ModelError("Alias %r is already in use" % alias)
 
     size_text = render.human_size(chosen["size"]) if chosen["size"] else "unknown size"
+    if args.context is not None:
+        context = args.context
+        context_auto = False
+    elif existing:
+        context = existing.get("context", config.DEFAULT_CONTEXT)
+        context_auto = existing.get("context_auto", False)
+    else:
+        context = hardware.recommended_context()
+        context_auto = True
     if not existing or args.force:
-        context = (args.context if args.context is not None
-                   else (existing.get("context") if existing else 8192))
         warnings = hardware.preflight(
             chosen["size"], context, models_dir=hfcache.cache_root())
         if warnings:
@@ -516,6 +523,7 @@ def cmd_get(args):
                         "revision": args.revision, "path": str(snapshot)})
         if args.context is not None:
             profile["context"] = args.context
+            profile["context_auto"] = False
     else:
         profile = hfcache.downloaded_profile(
             repo, chosen["name"], args.revision, commit, model_id, alias,
@@ -906,6 +914,8 @@ def build_parser(prog=None):
     command.add_argument("--predict", dest="n_predict", type=int)
     command = add("use", cmd_use, "select a model; restart the service if it is running")
     command.add_argument("model")
+    command.add_argument("--context-size", type=int, default=None,
+                         help="override context size (tokens) for this selection")
     command = add("start", cmd_start, "start the selected model")
     command.add_argument("model", nargs="?")
     command.add_argument("--no-wait", action="store_true")

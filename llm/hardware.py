@@ -20,6 +20,14 @@ UNIFIED_GPU_PATTERN = re.compile(r"\b(gb10|jetson|orin|xavier|tegra)\b",
                                  re.IGNORECASE)
 UNIFIED_GPU_WORDS = ("gb10", "jetson", "orin", "xavier", "tegra")
 
+# Context tiers. 12 GiB of usable VRAM/RAM is enough for 32k; larger
+# machines get 64k, and very large unified/discrete memory gets 128k.
+SMALL_CONTEXT = 32768
+DEFAULT_CONTEXT = 65536
+LARGE_CONTEXT = 131072
+SMALL_MEMORY = 12 * GIB
+LARGE_MEMORY = 128 * GIB
+
 
 @dataclass
 class Hardware:

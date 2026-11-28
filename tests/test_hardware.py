@@ -164,6 +164,32 @@ class HardwareTest(unittest.TestCase):
         self.assertEqual(machine.total_ram, 0)
         self.assertFalse(machine.unified)
 
+    def test_recommended_context_tiers(self):
+        def machine(memory):
+            return hardware.Hardware(chip="x", model="x", total_ram=memory,
+                                     unified=True, gpu="x", vram=None,
+                                     disk_free=100 * hardware.GIB)
+        self.assertEqual(hardware.recommended_context(machine(12 * hardware.GIB)),
+                         32768)
+        self.assertEqual(hardware.recommended_context(machine(12 * hardware.GIB + 1)),
+                         65536)
+        self.assertEqual(hardware.recommended_context(machine(128 * hardware.GIB)),
+                         65536)
+        self.assertEqual(hardware.recommended_context(machine(128 * hardware.GIB + 1)),
+                         131072)
+
+    def test_recommended_context_uses_vram_for_discrete_gpu(self):
+        machine = hardware.Hardware(chip="x", model="x", total_ram=64 * hardware.GIB,
+                                    unified=False, gpu="NVIDIA", vram=8 * hardware.GIB,
+                                    disk_free=100 * hardware.GIB)
+        self.assertEqual(hardware.recommended_context(machine), 32768)
+
+    def test_recommended_context_uses_ram_without_gpu(self):
+        machine = hardware.Hardware(chip="x", model="x", total_ram=8 * hardware.GIB,
+                                    unified=False, gpu="unknown", vram=None,
+                                    disk_free=100 * hardware.GIB)
+        self.assertEqual(hardware.recommended_context(machine), 32768)
+
     def test_disk_free_uses_btrfs_when_available(self):
         with mock.patch.object(hardware.host, "IS_LINUX", True), \
              mock.patch.object(hardware, "_filesystem_type", return_value="btrfs"), \

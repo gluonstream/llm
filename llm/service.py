@@ -332,6 +332,8 @@ def start(expected=None):
         wanted = config.resolve_model(expected)["id"]
         if wanted != profile["id"]:
             raise ModelLoadError("Selected model changed; rerun the label command")
+    profile = dict(profile)
+    profile["context"] = config.effective_context(profile)
     validate_profile_files(profile)
     pid = running()
     if pid and not is_expected_listener(pid, profile):
