@@ -1415,7 +1415,7 @@ class RemoveCliTest(unittest.TestCase):
         return {
             "repo": "org/model", "commit": "a" * 40, "source": "user",
             "files": [{"path": "/cache/m.gguf", "filename": "m.gguf",
-                       "size": 3, "shared": False}],
+                       "commit": "a" * 40, "size": 3, "shared": False}],
             "freed": 3,
         }
 

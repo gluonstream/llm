@@ -48,6 +48,23 @@ def _split_links(repo, commit, root, stem="M-Q4", subdir="q4",
     return links, blobs
 
 
+def _split_two_snapshots(repo, root, stem="M-Q2", subdir="Q2_0",
+                         shard_data=(b"a", b"bb")):
+    """Create the same split set under two snapshot commits, sharing blobs."""
+    repo_dir = hfcache.repo_dir(repo, root)
+    links_by_commit = {COMMIT: [], OTHER_COMMIT: []}
+    blobs = []
+    total = len(shard_data)
+    for index, data in enumerate(shard_data, start=1):
+        filename = "%s/%s-%05d-of-%05d.gguf" % (subdir, stem, index, total)
+        blob = _blob(repo_dir, data)
+        for commit in (COMMIT, OTHER_COMMIT):
+            link = hfcache.link_snapshot(repo, filename, commit, blob, root)
+            links_by_commit[commit].append(link)
+        blobs.append(blob)
+    return links_by_commit, blobs
+
+
 def _profile(model_id, alias, repo, filename, revision, path, source=None):
     profile = {
         "id": model_id, "alias": alias, "repo": repo, "filename": filename,
@@ -140,21 +157,58 @@ class RemoveTest(unittest.TestCase):
         self.assertTrue(q8_blob.exists())
         self.assertTrue(repo_dir.exists())
 
-    def test_apply_keeps_blob_referenced_by_another_snapshot(self):
+    def test_apply_keeps_blob_shared_by_another_quant(self):
         repo = "org/model"
         data = b"shared-bytes"
         repo_dir = hfcache.repo_dir(repo, self.root)
         blob = _blob(repo_dir, data)
-        link_a = hfcache.link_snapshot(repo, "x.gguf", COMMIT, blob, self.root)
-        link_b = hfcache.link_snapshot(repo, "x.gguf", OTHER_COMMIT, blob, self.root)
-        profile = _profile("m-a", "a", repo, "x.gguf", "main", link_a,
+        link_q4 = hfcache.link_snapshot(repo, "q4/x.gguf", COMMIT, blob,
+                                        self.root)
+        link_q8 = hfcache.link_snapshot(repo, "q8/x.gguf", COMMIT, blob,
+                                        self.root)
+        profile = _profile("m-q4", "q4", repo, "q4/x.gguf", "main", link_q4,
                            source="cache")
         result = remove.remove(profile, root=self.root, apply=True)
-        self.assertFalse(link_a.exists())
+        self.assertFalse(link_q4.exists())
+        self.assertTrue(link_q8.exists())
         self.assertTrue(blob.exists())
-        self.assertTrue(link_b.exists())
         self.assertIn(str(blob), result["kept"])
         self.assertEqual(result["freed"], 0)
+
+    def test_two_snapshots_same_model_removes_all_copies(self):
+        repo = "org/model"
+        links_by_commit, blobs = _split_two_snapshots(repo, self.root)
+        profile = _profile("m-q2", "q2", repo, "Q2_0/M-Q2-00001-of-00002.gguf",
+                           "main", links_by_commit[COMMIT][0])
+        plan = remove.plan(profile, root=self.root)
+        self.assertEqual(len(plan["files"]), 4)
+        self.assertEqual({item["commit"] for item in plan["files"]},
+                         {COMMIT, OTHER_COMMIT})
+        self.assertTrue(all(not item["shared"] for item in plan["files"]))
+        self.assertEqual(plan["freed"],
+                         sum(len(data) for data in (b"a", b"bb")))
+
+        result = remove.remove(profile, root=self.root, apply=True)
+        self.assertEqual(result["freed"],
+                         sum(len(data) for data in (b"a", b"bb")))
+        for links in links_by_commit.values():
+            for link in links:
+                self.assertFalse(link.exists())
+        for blob in blobs:
+            self.assertFalse(blob.exists())
+
+    def test_single_snapshot_model_frees_its_blob(self):
+        repo = "org/model"
+        link, blob = _link(repo, "m.gguf", COMMIT, self.root, b"gguf")
+        profile = _profile("m", "m", repo, "m.gguf", "main", link,
+                           source="cache")
+        plan = remove.plan(profile, root=self.root)
+        self.assertEqual(len(plan["files"]), 1)
+        self.assertEqual(plan["freed"], 4)
+        result = remove.remove(profile, root=self.root, apply=True)
+        self.assertFalse(link.exists())
+        self.assertFalse(blob.exists())
+        self.assertEqual(result["freed"], 4)
 
     def test_apply_builtin_deletes_files_and_keeps_profile(self):
         builtin = config.BUILTIN_PROFILES["glm-4.7-flash-ud-q4-k-xl"]

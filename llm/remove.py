@@ -103,6 +103,19 @@ def _resolve_target(link, blobs):
     return target
 
 
+def _model_relative_names(entry, snapshot_dir, profile):
+    """Return the relative filename(s) of the model inside its snapshot dir."""
+    relative_entry = entry.relative_to(snapshot_dir)
+    parts = (hfcache.split_set(entry.name)
+             or hfcache.split_set(profile.get("filename") or ""))
+    if parts is None:
+        return [relative_entry.as_posix()]
+    stem, _index, total = parts
+    return [(relative_entry.parent / ("%s-%05d-of-%05d.gguf"
+                                      % (stem, index, total))).as_posix()
+            for index in range(1, total + 1)]
+
+
 def plan(profile, root=None):
     """Describe the cache files that would be removed for ``profile``."""
     root = Path(hfcache.cache_root() if root is None else root).resolve()
@@ -145,48 +158,61 @@ def plan(profile, root=None):
             "%s is not under a cache snapshot: %s" % (alias, entry))
     commit = snapshot_dir.name
 
-    parts = (hfcache.split_set(entry.name)
-             or hfcache.split_set(profile.get("filename") or ""))
-    if parts is not None:
-        stem, _index, total = parts
-        links = []
-        for index in range(1, total + 1):
-            shard_name = "%s-%05d-of-%05d.gguf" % (stem, index, total)
-            shard = entry.parent / shard_name
-            if not _within(shard, snapshots):
+    # The same model may live under several snapshot commits; collect every
+    # snapshot directory that holds the same relative filename(s).
+    rel_names = _model_relative_names(entry, snapshot_dir, profile)
+    collected = []
+    for snapshot in sorted(snapshots.iterdir(), key=lambda item: item.name):
+        if not snapshot.is_dir():
+            continue
+        for rel in rel_names:
+            candidate = snapshot / rel
+            if not _within(candidate, snapshots):
                 raise config.ModelError(
-                    "shard %s escapes the cache snapshots" % shard)
-            if shard.exists():
-                links.append(shard)
-        if not links:
-            raise config.ModelError("no shards found for split set %s" % entry)
-        links.sort(key=lambda item: item.name)
-    else:
-        links = [entry]
+                    "candidate %s escapes the cache snapshots" % candidate)
+            if not candidate.is_file():
+                continue
+            target = _resolve_target(candidate, blobs) or candidate
+            try:
+                size = target.stat().st_size
+            except OSError:
+                size = 0
+            collected.append({
+                "path": candidate, "rel": rel, "commit": snapshot.name,
+                "target": target, "size": size,
+            })
 
+    if not collected:
+        raise config.ModelError(
+            "no cached files found for %s" % alias)
+
+    # A blob is shared only when some symlink outside the removal set still
+    # refers to it; copies of the model across snapshots do not count.
     referrers = _referrers(repo_dir)
+    removal_counts = {}
+    for item in collected:
+        target = item["target"]
+        removal_counts[target] = removal_counts.get(target, 0) + 1
+    shared_targets = {
+        target for target, count in removal_counts.items()
+        if len(referrers.get(target, [])) > count
+    }
+
     files = []
     freed = 0
-    for link in links:
-        link = Path(link)
-        target = _resolve_target(link, blobs) or link
-        try:
-            size = target.stat().st_size
-        except OSError:
-            size = 0
-        shared = link.is_symlink() and len(referrers.get(target, [])) > 1
-        if not shared:
-            freed += size
-        try:
-            filename = str(link.relative_to(snapshot_dir))
-        except ValueError:
-            filename = link.name
+    seen = set()
+    for item in collected:
+        shared = item["target"] in shared_targets
         files.append({
-            "path": str(link),
-            "filename": filename,
-            "size": size,
+            "path": str(item["path"]),
+            "filename": item["rel"],
+            "commit": item["commit"],
+            "size": item["size"],
             "shared": shared,
         })
+        if not shared and item["target"] not in seen:
+            seen.add(item["target"])
+            freed += item["size"]
 
     return {
         "repo": repo,
@@ -233,23 +259,26 @@ def remove(profile, root=None, apply=False):
     kept = []
     errors = []
     freed = 0
+    seen = set()
     for item in result["files"]:
         link = Path(item["path"])
         is_link = link.is_symlink()
         blob = _resolve_target(link, blobs) if is_link else link
         try:
-            if is_link:
-                link.unlink()
-                deleted.append(str(link))
-            elif link.exists():
+            if is_link or link.exists():
                 link.unlink()
                 deleted.append(str(link))
         except OSError as exc:
             errors.append("could not remove %s: %s" % (link, exc))
             continue
         if item["shared"]:
-            kept.append(str(blob))
+            if blob not in seen:
+                seen.add(blob)
+                kept.append(str(blob))
             continue
+        if blob in seen:
+            continue
+        seen.add(blob)
         if is_link:
             try:
                 if blob.exists():

@@ -618,12 +618,13 @@ def cmd_remove(args):
     plan = remove.remove(profile, apply=False)
     alias = profile.get("alias") or profile["id"]
 
-    print("%s (%s) from %s @ %s"
-          % (alias, profile["id"], plan["repo"], plan["commit"]))
+    print("%s (%s) from %s"
+          % (alias, profile["id"], plan["repo"]))
     for item in plan["files"]:
         note = " (shared)" if item["shared"] else ""
-        print("  %-12s %s%s"
-              % (render.human_size(item["size"]), item["filename"], note))
+        print("  %-12s %-10s %s%s"
+              % (item.get("commit", plan.get("commit", "")),
+                 render.human_size(item["size"]), item["filename"], note))
     print("Would free %s." % render.human_size(plan["freed"]))
 
     if not args.apply:
