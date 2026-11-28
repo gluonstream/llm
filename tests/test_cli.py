@@ -17,7 +17,7 @@ from unittest import mock
 # does not run tests/__init__.py.
 os.environ.setdefault("LMM_NO_CACHE", "1")
 
-from llm import cli, config, hardware, hub, runtime, service
+from llm import cli, config, hardware, hub, runtime, service, update
 
 
 def run_cli(argv, locked=None):
@@ -573,23 +573,39 @@ class VersionCliTest(unittest.TestCase):
         return buffer.getvalue()
 
     def test_version_prints_installed_and_up_to_date(self):
-        self.assertEqual(self._output(["version"]).splitlines(), [
-            "llm 1.4.0",
-            "last version is 1.4.0. you are up to date.",
-        ])
+        with mock.patch.object(update, "latest_version", return_value="1.4.0"):
+            self.assertEqual(self._output(["version"]).splitlines(), [
+                "llm 1.4.0",
+                "last version is 1.4.0. you are up to date.",
+            ])
 
     def test_version_uses_invocation_name(self):
-        with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/lmm"]):
+        with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/lmm"]), \
+             mock.patch.object(update, "latest_version", return_value="1.4.0"):
             lines = self._output(["version"]).splitlines()
         self.assertEqual(lines[0], "lmm 1.4.0")
 
     def test_version_points_to_update_when_latest_is_newer(self):
-        with mock.patch("llm.LATEST_VERSION", "1.4.1"):
+        with mock.patch.object(update, "latest_version", return_value="1.4.1"):
             lines = self._output(["version"]).splitlines()
         self.assertEqual(lines, [
             "llm 1.4.0",
             "last version is 1.4.1. run `llm update` to update.",
         ])
+
+    def test_update_skips_when_latest_is_not_newer(self):
+        with mock.patch.object(update, "latest_version", return_value="1.4.0"), \
+             mock.patch.object(update, "update") as patched:
+            output = self._output(["update"])
+        patched.assert_not_called()
+        self.assertIn("up to date", output)
+
+    def test_update_force_calls_update(self):
+        with mock.patch.object(update, "latest_version", return_value="1.4.0"), \
+             mock.patch.object(update, "update", return_value=Path("/tmp/x")) as patched:
+            output = self._output(["update", "--force"])
+        patched.assert_called_once()
+        self.assertIn("Updating llm", output)
 
 
 class DoctorCliTest(unittest.TestCase):

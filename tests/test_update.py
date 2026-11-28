@@ -1,11 +1,27 @@
+import io
 import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 from llm import update
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return self.text.encode("utf-8")
 
 
 class FakeRunner:
@@ -33,6 +49,41 @@ class UpdateTest(unittest.TestCase):
                     update.update(checkout=Path(tmp) / "llm-update", runner=runner)
         self.assertIn("unsupported OS", str(caught.exception))
         self.assertEqual(runner.calls, [])
+
+    def test_latest_version_reads_last_version_file(self):
+        def opener(url, timeout):
+            self.assertEqual(url, update.LAST_VERSION_URL)
+            return FakeResponse("1.4.0\n")
+        self.assertEqual(update.latest_version(opener=opener), "1.4.0")
+
+    def test_latest_version_returns_none_on_failure_or_invalid(self):
+        def opener(url, timeout):
+            raise OSError("offline")
+        self.assertIsNone(update.latest_version(opener=opener))
+        self.assertIsNone(update.latest_version(
+            opener=lambda url, timeout: FakeResponse("not a version")))
+
+    def test_needs_update_compares_versions(self):
+        self.assertTrue(update.needs_update("1.4.1", "1.4.0"))
+        self.assertFalse(update.needs_update("1.4.0", "1.4.0"))
+        self.assertFalse(update.needs_update("1.3.9", "1.4.0"))
+        self.assertFalse(update.needs_update("nope", "1.4.0"))
+
+    def test_main_skips_when_up_to_date(self):
+        buffer = io.StringIO()
+        with mock.patch.object(update, "latest_version", return_value="1.4.0"), \
+             mock.patch.object(update, "update") as patched, \
+             redirect_stdout(buffer):
+            self.assertEqual(update.main([]), 0)
+        patched.assert_not_called()
+        self.assertIn("up to date", buffer.getvalue())
+
+    def test_main_force_updates(self):
+        with mock.patch.object(update, "latest_version", return_value="1.4.0"), \
+             mock.patch.object(update, "update", return_value=Path("/tmp/x")) as patched, \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(update.main(["--force"]), 0)
+        patched.assert_called_once()
 
     def test_default_checkout_honors_env(self):
         with tempfile.TemporaryDirectory() as tmp:

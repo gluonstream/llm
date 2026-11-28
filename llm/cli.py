@@ -776,6 +776,12 @@ def cmd_doctor(args):
 
 
 def cmd_update(args):
+    from . import __version__
+    latest = update.latest_version()
+    if (not getattr(args, "force", False) and latest is not None
+            and not update.needs_update(latest, __version__)):
+        print("llm %s is up to date (latest %s)." % (__version__, latest))
+        return 0
     checkout = Path(args.dir).expanduser() if args.dir else None
     print("Updating llm from %s" % update.REPO_URL)
     path = update.update(checkout=checkout)
@@ -786,12 +792,13 @@ def cmd_update(args):
 def cmd_version(args):
     from . import __version__, LATEST_VERSION
     program = _program_name()
+    latest = update.latest_version() or LATEST_VERSION
     print("%s %s" % (program, __version__))
-    if __version__ == LATEST_VERSION:
-        print("last version is %s. you are up to date." % LATEST_VERSION)
+    if not update.needs_update(latest, __version__):
+        print("last version is %s. you are up to date." % latest)
     else:
         print("last version is %s. run `%s update` to update."
-              % (LATEST_VERSION, program))
+              % (latest, program))
     return 0
 
 
@@ -905,6 +912,8 @@ def build_parser(prog=None):
     command = add("update", cmd_update,
                   "fetch the latest source, build, and install")
     command.add_argument("--dir", help="checkout directory")
+    command.add_argument("--force", action="store_true",
+                         help="update even when LAST_VERSION.md is not newer")
     add("version", cmd_version, "show the installed version and whether it is current")
     add("doctor", cmd_doctor, "check llama.cpp, models, port and last failure")
     command = add("migrate-cache", cmd_migrate_cache,
