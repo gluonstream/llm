@@ -308,11 +308,6 @@ def cmd_migrate_cache(args):
     for entry in entries:
         heading = "%s \u2192 %s @ %s" % (
             entry["source"], entry["repo"], entry["commit"])
-        if entry.get("status") == "missing":
-            print(heading)
-            print("  missing      %d file(s) not found" % len(entry["files"]))
-            missing += 1
-            continue
         result = migrate.migrate(entry, dry_run=args.dry_run,
                                  verify=args.verify, keep_old=args.keep_old)
         print(heading)
@@ -335,11 +330,14 @@ def cmd_migrate_cache(args):
 
     print()
     if args.dry_run:
-        print("Dry run: %d model(s) would migrate, %d already present, "
-              "%d missing." % (migrated, already, missing))
+        summary = ("Dry run: %d model(s) would migrate, %d already present"
+                   % (migrated, already))
     else:
-        print("Migrated %d model(s); %d already present; %d missing."
-              % (migrated, already, missing))
+        summary = ("Migrated %d model(s); %d already present"
+                   % (migrated, already))
+    if missing:
+        summary += ", %d missing" % missing
+    print(summary + ".")
     if errors:
         print("%d error(s)." % errors, file=sys.stderr)
         return 1

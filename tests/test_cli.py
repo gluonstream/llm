@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import os
 import sys
@@ -291,16 +292,75 @@ class MigrateCacheCliTest(unittest.TestCase):
                        "size": 10, "path": "/tmp/graphify-gone/gone.gguf",
                        "present": False}],
         }
+        result = {
+            "source": entry["source"],
+            "repo": entry["repo"],
+            "commit": entry["commit"],
+            "status": "missing",
+            "files": [{"filename": "gone.gguf", "status": "missing",
+                       "method": None,
+                       "message": "source file not found"}],
+            "leftover": [],
+        }
         buffer = io.StringIO()
         with mock.patch.object(config, "migrate_state", return_value=False), \
              mock.patch.object(cli.migrate, "plan", return_value=[entry]), \
-             mock.patch.object(cli.migrate, "migrate") as applied, \
+             mock.patch.object(cli.migrate, "migrate",
+                               return_value=result) as applied, \
              redirect_stdout(buffer):
             self.assertEqual(cli.main(["migrate-cache"]), 0)
         text = buffer.getvalue()
         self.assertIn("org/gone", text)
         self.assertIn("missing", text)
-        applied.assert_not_called()
+        applied.assert_called_once()
+
+    def test_migrate_cache_rerun_reports_already_present(self):
+        payload = b"already migrated bytes"
+        sha256 = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / "share"
+            cache = root / "hub"
+            source = legacy / "graphify-test" / "model.gguf"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(payload)
+            mapping = {
+                "source": "~/.local/share/graphify-test",
+                "repo": "org/test",
+                "commit": "d" * 40,
+                "revision": "main",
+                "files": [{"filename": "model.gguf", "sha256": sha256,
+                           "size": len(payload)}],
+            }
+            real_plan = cli.migrate.plan
+
+            def run():
+                output = io.StringIO()
+                with mock.patch.dict(os.environ,
+                                     {"HF_HUB_CACHE": str(cache)}), \
+                     mock.patch.object(cli.migrate, "KNOWN_MIGRATIONS",
+                                       [mapping]), \
+                     mock.patch.object(
+                         cli.migrate, "plan",
+                         side_effect=lambda: real_plan(legacy_root=legacy,
+                                                       root=cache)), \
+                     mock.patch.object(config, "migrate_state",
+                                       return_value=False), \
+                     redirect_stdout(output):
+                    code = cli.main(["migrate-cache"])
+                return code, output.getvalue()
+
+            first_code, first = run()
+            self.assertEqual(first_code, 0)
+            self.assertIn("migrated", first)
+            self.assertFalse(source.exists())
+
+            second_code, second = run()
+            self.assertEqual(second_code, 0)
+            self.assertIn("already present", second)
+            self.assertNotIn("missing", second)
+            self.assertTrue(
+                (cache / "models--org--test" / "blobs" / sha256).is_file())
 
 
 class VersionCliTest(unittest.TestCase):
