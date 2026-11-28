@@ -15,6 +15,7 @@ LAST_VERSION_URL = (
     "https://raw.githubusercontent.com/gluonstream/llm/"
     "refs/heads/main/LAST_VERSION.md")
 CHECKOUT_NAME = "llm-update"
+BRANCH = "main"
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
@@ -81,10 +82,14 @@ def update(checkout=None, repo_url=REPO_URL, runner=subprocess.run):
     if checkout.exists():
         if not (checkout / ".git").is_dir():
             raise UpdateError("%s is not a git checkout; remove it and retry" % checkout)
-        _run(["git", "-C", str(checkout), "pull", "--ff-only"], runner=runner)
+        _run(["git", "-C", str(checkout), "fetch", "origin", BRANCH],
+             runner=runner)
+        _run(["git", "-C", str(checkout), "checkout", "-f", "-B", BRANCH,
+              "origin/" + BRANCH], runner=runner)
     else:
         checkout.parent.mkdir(parents=True, exist_ok=True)
-        _run(["git", "clone", repo_url, str(checkout)], runner=runner)
+        _run(["git", "clone", "--branch", BRANCH, repo_url, str(checkout)],
+             runner=runner)
     _run(["./build.sh"], cwd=checkout, runner=runner)
     _run(["./install.sh"], cwd=checkout, runner=runner)
     return checkout

@@ -98,7 +98,7 @@ class UpdateTest(unittest.TestCase):
             result = update.update(checkout=checkout, runner=runner)
         self.assertEqual(result, checkout)
         self.assertEqual(runner.calls, [
-            (["git", "clone", update.REPO_URL, str(checkout)], None),
+            (["git", "clone", "--branch", "main", update.REPO_URL, str(checkout)], None),
             (["./build.sh"], str(checkout)),
             (["./install.sh"], str(checkout)),
         ])
@@ -110,7 +110,10 @@ class UpdateTest(unittest.TestCase):
             runner = FakeRunner()
             update.update(checkout=checkout, runner=runner)
         self.assertEqual(runner.calls[0],
-                         (["git", "-C", str(checkout), "pull", "--ff-only"], None))
+                         (["git", "-C", str(checkout), "fetch", "origin", "main"], None))
+        self.assertEqual(runner.calls[1],
+                         (["git", "-C", str(checkout), "checkout", "-f", "-B",
+                           "main", "origin/main"], None))
 
     def test_update_refuses_non_git_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,7 +127,7 @@ class UpdateTest(unittest.TestCase):
     def test_update_reports_failed_clone(self):
         with tempfile.TemporaryDirectory() as tmp:
             checkout = Path(tmp) / "llm-update"
-            runner = FakeRunner(fail_on=["git", "clone", update.REPO_URL, str(checkout)])
+            runner = FakeRunner(fail_on=["git", "clone", "--branch", "main", update.REPO_URL, str(checkout)])
             with self.assertRaises(update.UpdateError) as caught:
                 update.update(checkout=checkout, runner=runner)
         self.assertIn("git clone", str(caught.exception))
@@ -134,10 +137,10 @@ class UpdateTest(unittest.TestCase):
             checkout = Path(tmp) / "llm-update"
             (checkout / ".git").mkdir(parents=True)
             runner = FakeRunner(
-                fail_on=["git", "-C", str(checkout), "pull", "--ff-only"])
+                fail_on=["git", "-C", str(checkout), "fetch", "origin", "main"])
             with self.assertRaises(update.UpdateError) as caught:
                 update.update(checkout=checkout, runner=runner)
-        self.assertIn("pull --ff-only", str(caught.exception))
+        self.assertIn("fetch", str(caught.exception))
 
     def test_update_reports_failed_build_and_does_not_install(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,7 +167,7 @@ class UpdateTest(unittest.TestCase):
             expected = Path(tmp) / "custom"
         self.assertEqual(result, expected)
         self.assertEqual(runner.calls[0][0],
-                         ["git", "clone", update.REPO_URL, str(expected)])
+                         ["git", "clone", "--branch", "main", update.REPO_URL, str(expected)])
 
     def test_main_forwards_dir_to_update(self):
         with mock.patch.object(update, "latest_version", return_value=None), \
