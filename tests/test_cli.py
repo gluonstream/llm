@@ -42,7 +42,8 @@ class CliTest(unittest.TestCase):
         for command in ("list", "status", "use", "doctor", "logs", "version"):
             self.assertIn(command, text)
         for example in ("analyze", "apply", "--runtime-policy extended",
-                        "--sync-opencode", "remove qwen2.5-7b-instruct-graphify --dry-run"):
+                        "--sync-opencode", "--sync-pi", "--sync-codex",
+                        "remove qwen2.5-7b-instruct-graphify --dry-run"):
             self.assertIn(example, text)
 
     def test_prog_follows_invocation_name(self):

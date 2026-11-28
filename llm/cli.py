@@ -864,6 +864,8 @@ def build_parser(prog=None):
         "apply",
         "apply --runtime-policy extended",
         "apply --runtime-policy extended --sync-opencode",
+        "apply --runtime-policy extended --sync-pi",
+        "apply --runtime-policy extended --sync-codex",
         "apply --sync-clients",
         "remove qwen2.5-7b-instruct-graphify --dry-run",
         "migrate-cache --dry-run",
