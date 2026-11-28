@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import hfcache, host
@@ -66,6 +67,14 @@ class ModelError(ValueError):
 USER_MODELS = STATE / "models.json"
 
 
+@dataclass
+class Registry:
+    models: dict = field(default_factory=dict)
+    overrides: dict = field(default_factory=dict)
+    wrapped: bool = False
+    invalid: list = field(default_factory=list)
+
+
 def validate_profile(profile):
     if not isinstance(profile, dict):
         raise ModelError("Invalid model profile: expected an object")
@@ -98,6 +107,71 @@ def load_user_profiles(path=None):
             continue
         profiles[profile["id"]] = profile
     return profiles
+
+
+def load_registry(path=None):
+    """Read models.json, accepting the legacy flat or wrapped shape.
+
+    Returns a Registry whose ``models`` hold only dict profiles (excluding a
+    literal ``overrides`` key) and whose ``overrides`` hold only validated
+    ``{"context": n}`` entries; anything else is pushed to ``invalid``.
+    """
+    path = USER_MODELS if path is None else Path(path)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return Registry()
+    if not isinstance(data, dict):
+        return Registry()
+
+    wrapped = isinstance(data.get("models"), dict)
+    raw_models = data["models"] if wrapped else data
+    models = {}
+    for model_id, profile in raw_models.items():
+        if model_id == "overrides" or not isinstance(profile, dict):
+            continue
+        models[model_id] = dict(profile)
+
+    overrides = {}
+    invalid = []
+    raw_overrides = data.get("overrides")
+    if isinstance(raw_overrides, dict):
+        for model_id, override in raw_overrides.items():
+            if not isinstance(override, dict):
+                invalid.append((model_id, "override must be an object"))
+                continue
+            context = override.get("context")
+            if type(context) is not int or context <= 0:
+                invalid.append(
+                    (model_id, "override context must be a positive integer"))
+                continue
+            overrides[model_id] = {"context": context}
+    return Registry(models, overrides, wrapped, invalid)
+
+
+def save_registry(registry, path=None):
+    """Write the registry atomically, wrapping it once overrides are needed."""
+    path = USER_MODELS if path is None else Path(path)
+    models = dict(registry.models)
+    overrides = dict(registry.overrides)
+    if registry.wrapped or overrides:
+        doc = {"models": models}
+    else:
+        doc = models
+    if overrides:
+        doc["overrides"] = overrides
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent,
+                                         delete=False) as out:
+            temporary = Path(out.name)
+            json.dump(doc, out, indent=2, sort_keys=True)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _alias(profile):
@@ -214,13 +288,25 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
         merged[model_id] = profile
         if alias:
             aliases[alias] = model_id
+
+    # Apply per-model overrides on top of everything merged so far (built-ins,
+    # discovered cache models, and user models alike).
+    registry = load_registry(path)
+    for model_id, override in registry.overrides.items():
+        if model_id in merged:
+            merged[model_id] = dict(merged[model_id])
+            merged[model_id]["context"] = override["context"]
+        else:
+            warnings.append("ignored override for unknown model %r" % model_id)
+    for model_id, reason in registry.invalid:
+        warnings.append("ignored invalid override for %r: %s"
+                        % (model_id, reason))
     return merged
 
 
-def reload_profiles(path=None, builtin=None, warnings=None, discovered=None):
+def reload_profiles(path=None, builtin=None, discovered=None):
     global PROFILES, PROFILE_WARNINGS
-    if warnings is None:
-        warnings = []
+    warnings = []
     PROFILES = load_profiles(path=path, builtin=builtin, warnings=warnings,
                              discovered=discovered)
     PROFILE_WARNINGS = warnings
@@ -245,21 +331,41 @@ def register_model(profile, path=None, profiles=None):
             raise ModelError("Alias %r is already used by %s"
                              % (profile["alias"], other_id))
     registry_path = USER_MODELS if path is None else Path(path)
-    registry = load_user_profiles(registry_path)
-    registry[model_id] = profile
-    registry_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=registry_path.parent,
-                                         delete=False) as out:
-            temporary = Path(out.name)
-            json.dump(registry, out, indent=2, sort_keys=True)
-        os.replace(temporary, registry_path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    registry = load_registry(registry_path)
+    registry.models[model_id] = profile
+    save_registry(registry, registry_path)
     profiles[model_id] = profile
     return profile
+
+
+def set_context(model_id, context, path=None):
+    if type(context) is not int or context <= 0:
+        raise ModelError("context must be a positive integer, got %r"
+                         % (context,))
+    registry = load_registry(path)
+    if model_id in registry.models:
+        registry.models[model_id] = dict(registry.models[model_id])
+        registry.models[model_id]["context"] = context
+        registry.overrides.pop(model_id, None)
+    elif model_id in BUILTIN_PROFILES or model_id in PROFILES:
+        registry.overrides[model_id] = {"context": context}
+    else:
+        raise ModelError("Unknown model %r" % model_id)
+    save_registry(registry, path)
+
+
+def context_source(model_id, path=None):
+    registry = load_registry(path)
+    if model_id in registry.overrides:
+        return "override"
+    if model_id in registry.models:
+        return "user"
+    if model_id in BUILTIN_PROFILES:
+        return "built-in"
+    profile = PROFILES.get(model_id)
+    if profile is not None and profile.get("source") == "cache":
+        return "cache"
+    return "unknown"
 
 
 def _slug(text):

@@ -157,6 +157,113 @@ class RegistryTest(unittest.TestCase):
     def test_normalize_alias_slugs(self):
         self.assertEqual(config.normalize_alias("My Model!"), "my-model")
 
+    def test_legacy_flat_registry_still_loads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({"mine": self._profile()}))
+            loaded = config.load_registry(registry)
+            self.assertIn("mine", loaded.models)
+            self.assertEqual(loaded.models["mine"]["alias"], "mine")
+            self.assertEqual(loaded.overrides, {})
+            self.assertFalse(loaded.wrapped)
+
+    def test_overrides_apply_to_builtin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({
+                "overrides": {config.DEFAULT: {"context": 65536}}}))
+            merged = config.load_profiles(path=registry, discovered={})
+            self.assertEqual(merged[config.DEFAULT]["context"], 65536)
+
+    def test_overrides_apply_to_user_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({
+                "models": {"mine": self._profile()},
+                "overrides": {"mine": {"context": 131072}},
+            }))
+            merged = config.load_profiles(path=registry, discovered={})
+            self.assertEqual(merged["mine"]["context"], 131072)
+
+    def test_invalid_override_is_ignored_and_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({
+                "overrides": {"x": {"context": "big"}}}))
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides, {})
+            self.assertTrue(reg.invalid)
+
+    def test_save_registry_wraps_when_overrides_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            reg = config.Registry({"mine": self._profile()},
+                                  {config.DEFAULT: {"context": 65536}},
+                                  False, [])
+            config.save_registry(reg, registry)
+            data = json.loads(registry.read_text())
+            self.assertIn("models", data)
+            self.assertIn("overrides", data)
+            self.assertEqual(data["overrides"][config.DEFAULT]["context"], 65536)
+
+    def test_register_model_preserves_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({
+                "models": {"mine": self._profile()},
+                "overrides": {config.DEFAULT: {"context": 65536}},
+            }))
+            profiles = dict(config.BUILTIN_PROFILES)
+            config.register_model(self._profile("second", "second"),
+                                  path=registry, profiles=profiles)
+            data = json.loads(registry.read_text())
+            self.assertEqual(data["overrides"][config.DEFAULT]["context"], 65536)
+            self.assertIn("second", data["models"])
+
+    def test_set_context_writes_override_for_builtin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            config.set_context(config.DEFAULT, 65536, path=registry)
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides[config.DEFAULT]["context"], 65536)
+
+    def test_set_context_updates_user_model_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({"mine": self._profile()}))
+            config.set_context("mine", 131072, path=registry)
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.models["mine"]["context"], 131072)
+            self.assertNotIn("mine", reg.overrides)
+
+    def test_reload_profiles_refreshes_global(self):
+        original_profiles = config.PROFILES
+        original_warnings = config.PROFILE_WARNINGS
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                registry = Path(tmp) / "models.json"
+                with mock.patch.object(config, "USER_MODELS", registry):
+                    config.set_context(config.DEFAULT, 65536)
+                    config.reload_profiles()
+                    self.assertEqual(config.PROFILES[config.DEFAULT]["context"],
+                                     65536)
+        finally:
+            config.PROFILES = original_profiles
+            config.PROFILE_WARNINGS = original_warnings
+
+    def test_context_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            self.assertEqual(config.context_source(config.DEFAULT, path=registry),
+                             "built-in")
+            registry.write_text(json.dumps({
+                "overrides": {config.DEFAULT: {"context": 65536}}}))
+            self.assertEqual(config.context_source(config.DEFAULT, path=registry),
+                             "override")
+            registry.write_text(json.dumps({"mine": self._profile()}))
+            self.assertEqual(config.context_source("mine", path=registry), "user")
+            self.assertEqual(config.context_source("nope", path=registry), "unknown")
+
 
 class CacheProfileTest(unittest.TestCase):
     def _empty_registry(self, tmp):
