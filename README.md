@@ -130,7 +130,8 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 | `llm get <repo>[:<quant>]` | Download, verify, and register a GGUF model into the cache. |
 | `llm migrate-cache [--dry-run] [--verify] [--keep-old]` | Move legacy model directories into the cache. |
 | `llm context [<model>] [<tokens>|auto]` | Show all contexts, or show/set one model's context window. |
-| `llm apply [<model>...]` | Size context for installed models and write them back. |
+| `llm analyze [--context N]` | Show the KV-cache memory for each model at f16/q8_0/q4_0. |
+| `llm apply [<model>...]` | Size context and runtime flags for installed models and write them back. |
 | `llm doctor` | Check llama.cpp, hardware, models, port, and the last failure. |
 | `llm update [--dir PATH]` | Fetch, build, and install the latest source. |
 | `llm version` | Show the installed version and whether it is the latest release. |
@@ -290,7 +291,102 @@ glm-4.7-flash        16.3 GiB    32,768           31.2 GiB      kept (no candida
 - When the running model's context changed (or the server's real `n_ctx`
   drifted from the profile), `apply` restarts the service to pick it up.
 
-### Keeping OpenCode and Pi in sync
+### Runtime tuning
+
+`llm apply` now chooses context and llama.cpp runtime flags together: KV-cache
+quantization, flash attention, batch/ubatch sizing, prompt-cache reuse, and a
+`--fit` headroom guard. A policy picks sensible defaults, and each flag is
+written only when the installed `llama-server --help` supports it (old builds
+silently fall back to f16 KV, 512/256 batches, and no cache-reuse).
+
+| Policy | KV K/V | Context candidates | batch/ubatch | cache-reuse | fit |
+| --- | --- | --- | --- | --- | --- |
+| `conservative` | `f16` / `f16` | 64K | 1024 / 256 | 256 | on, 2048 |
+| `balanced` (default) | `q8_0` / `q8_0` | 128K, 64K | 2048 / 512 | 256 | on, 2048 |
+| `extended` | `q8_0` / `q8_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
+| `aggressive` | `q4_0` / `q4_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
+
+- `conservative` is maximum accuracy at the cost of more KV RAM: f16 K and V, 64K.
+- `balanced` cuts KV RAM roughly in half with near-identical perplexity: q8_0 K
+  and V, 128K or 64K depending on what fits.
+- `extended` keeps q8_0 but prefers 128K and larger batches when memory allows.
+- `aggressive` shrinks KV RAM to about a quarter (q4_0) for the largest context,
+  accepting some precision/recall loss.
+
+The memory story: a quantized KV cache stores fewer bytes per value than f16 —
+`q8_0` is 34 bytes per 32 values (≈ 0.53×) and `q4_0` is 18 bytes per 32 values
+(≈ 0.28×), so `q8_0` roughly halves the KV cache and `q4_0` roughly quarters it.
+Because quantized KV needs flash attention, any non-f16 KV forces `-fa on`; if
+the server does not support that, `apply` keeps f16 and reports it.
+
+Select a policy or override individual fields:
+
+```sh
+llm apply --runtime-policy extended
+llm apply --runtime-policy aggressive
+llm apply --kv q8_0                 # both K and V
+llm apply --kv-k q5_0 --kv-v q4_0   # asymmetric K/V (slightly safer than q4_0/q4_0)
+llm apply --batch 2048 --ubatch 512
+llm apply --fit-target 4096         # --fit margin in MiB (default 2048)
+llm apply --no-fit                  # disable the fit headroom guard
+llm apply --no-cache-reuse          # disable prompt-cache reuse
+```
+
+`--fit` preserves a headroom margin (2 GiB by default) so a context that only
+just fits is not chosen; `--fit-target` tunes that margin. Usage history from
+`server.log` right-sizes the context: `apply` reads the observed peak token
+count and keeps only candidates that hold peak + 50%, rounded up to the nearest
+candidate, instead of always reaching for the model's native maximum.
+
+`apply` reports the plan one row per model, with the chosen KV type and
+batch/ubatch:
+
+```
+MODEL                  FILE      CONTEXT         KV     BATCH     EST. NEEDED   ACTION
+qwen2.5-7b-instruct    4.4 GiB   8K → 128K      q8_0   2048/512  10.5 GiB      updated
+inkling-2-mini        16.4 GiB   8K → 64K       q8_0   2048/512  27.4 GiB      updated
+```
+
+`llm context MODEL` prints the effective runtime summary
+(`q8_0 KV · 2048/512 · fit 2048 · cache-reuse 256`), and `llm doctor` adds the
+same runtime line plus the observed peak from the log.
+
+### Analyzing KV memory
+
+```sh
+llm analyze                # every cached model at 64K context
+llm analyze --context 128K
+```
+
+`llm analyze` prints one row per model (built-ins plus cache-discovered models)
+with the KV-cache size at f16, q8_0, and q4_0 precision, the saving from q8_0,
+and whether the q8_0 estimate fits the machine's memory budget:
+
+```
+MODEL                  SIZE    CTX     f16     q8_0    q4_0    SAVE    FIT
+qwen2.5-7b-instruct    4.4G    64K     3.50G   1.86G   0.98G   46.9%   yes
+```
+
+### Generation and speculative decoding
+
+`apply` also stores sampling and speculative-decoding defaults in the runtime
+block, and emits them only when the server supports them:
+
+```sh
+llm apply --top-k 40 --predict -1          # sampling defaults (--top-k, -n)
+llm apply --spec-type draft-mtp --draft MODEL
+llm apply --draft MODEL                    # implies --spec-type draft-simple
+llm apply --cmoe                           # keep MoE expert weights on CPU
+llm apply --reasoning on --reasoning-budget 4096
+llm apply --device 0,1                     # -dev list
+```
+
+`--spec-type` is one of `none`, `draft-simple`, `draft-mtp`, or `draft-eagle3`;
+`--draft MODEL` resolves another profile and stores its cache path. `--cmoe`
+keeps MoE expert weights on CPU (`-cmoe`), and `--reasoning`/`--reasoning-budget`
+map to `-rea` and `--reasoning-budget`.
+
+### Keeping OpenCode, Pi, and Codex in sync
 
 `llm apply --sync-opencode` rewrites only the local `llamacpp` provider's
 `limit.context` for each installed model in `~/.config/opencode/opencode.json`
@@ -300,10 +396,20 @@ written first.
 
 `llm apply --sync-pi` rewrites the local provider's `contextWindow` for each
 installed model in `~/.pi/agent/models.json` (or `PI_CODING_AGENT_DIR`), again
-with a timestamped backup. `--sync-clients` does both.
+with a timestamped backup.
 
-Neither client is ever written unless you ask; `llm doctor` reports mismatches
-and points at the right flag.
+`llm apply --sync-codex` edits `~/.codex/config.toml` (or
+`CODEX_HOME/config.toml`) so the selected model points at the local llama.cpp
+endpoint: it sets the top-level `model` to the selected alias and
+`model_provider = "llamacpp"`, and writes a `[model_providers.llamacpp]` section
+with `name = "llama.cpp"`, `base_url = "<llm URL>/v1"`, `wire_api = "responses"`,
+`requires_openai_auth = false`, and `supports_websockets = false`. The edit is a
+targeted line rewrite, so comments, plugins, and marketplaces survive; a
+timestamped backup is written and nothing changes when the file is already in
+sync. `--sync-clients` covers OpenCode, Pi, and Codex.
+
+No client is ever written unless you ask; `llm doctor` reports mismatches and
+points at the right flag.
 
 ### GPU statistics
 
@@ -400,8 +506,12 @@ llm/
 │   ├── hub.py                      # Hugging Face search and downloads
 │   ├── hardware.py                 # hardware/GPU detection and fit preflight
 │   ├── gguf.py                     # GGUF metadata and KV-cache sizing
+│   ├── runtime.py                  # runtime tuning policies and overrides
+│   ├── analysis.py                 # per-model KV-memory analysis rows
+│   ├── usage.py                    # observed context peak from server.log
 │   ├── opencode.py                 # OpenCode provider sync (limit.context)
 │   ├── pi.py                       # Pi provider sync (contextWindow)
+│   ├── codex.py                    # Codex provider sync (config.toml)
 │   ├── update.py                   # self-update checkout, build, install
 │   ├── diagnose.py                 # llama.cpp version and failure hints
 │   └── render.py                   # plain-text tables and status output
@@ -431,11 +541,19 @@ llm/
   estimates model-fit before a download. It also probes per-GPU statistics via
   `gpustat`/`nvidia-smi`/sysfs and owns the context budget and chooser.
 - **`gguf.py`** parses GGUF metadata (layers, KV heads, head dims) and computes
-  the exact f16 KV-cache size used by `llm apply` and `llm context auto`.
+  the exact KV-cache size at any KV precision, used by `llm apply`, `llm
+  context auto`, and `llm analyze`.
+- **`runtime.py`** holds the four runtime policies, applies per-flag overrides,
+  and filters context candidates by the observed usage peak.
+- **`analysis.py`** builds the per-model KV-memory rows for `llm analyze`.
+- **`usage.py`** reads `server.log` to find the observed peak token count.
 - **`opencode.py`** rewrites only the OpenCode `llamacpp` provider's
   `limit.context` when `llm apply --sync-opencode` is requested, with a backup.
 - **`pi.py`** rewrites only the Pi local provider's `contextWindow` when
   `llm apply --sync-pi` is requested, with a backup.
+- **`codex.py`** rewrites only the `model`/`model_provider` and
+  `[model_providers.llamacpp]` lines in `~/.codex/config.toml` when
+  `llm apply --sync-codex` is requested, with a backup.
 - **`update.py`** implements `llm update`: clone or pull a checkout, then run
   `build.sh` and `install.sh`.
 - **`diagnose.py`** parses `llama-server --version`, Homebrew status, and known

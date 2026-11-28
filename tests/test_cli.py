@@ -574,21 +574,21 @@ class VersionCliTest(unittest.TestCase):
 
     def test_version_prints_installed_and_up_to_date(self):
         self.assertEqual(self._output(["version"]).splitlines(), [
-            "llm 1.2.0",
-            "last version is 1.2.0. you are up to date.",
+            "llm 1.3.0",
+            "last version is 1.3.0. you are up to date.",
         ])
 
     def test_version_uses_invocation_name(self):
         with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/lmm"]):
             lines = self._output(["version"]).splitlines()
-        self.assertEqual(lines[0], "lmm 1.2.0")
+        self.assertEqual(lines[0], "lmm 1.3.0")
 
     def test_version_points_to_update_when_latest_is_newer(self):
-        with mock.patch("llm.LATEST_VERSION", "1.2.1"):
+        with mock.patch("llm.LATEST_VERSION", "1.3.1"):
             lines = self._output(["version"]).splitlines()
         self.assertEqual(lines, [
-            "llm 1.2.0",
-            "last version is 1.2.1. run `llm update` to update.",
+            "llm 1.3.0",
+            "last version is 1.3.1. run `llm update` to update.",
         ])
 
 
