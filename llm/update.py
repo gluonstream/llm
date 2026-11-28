@@ -13,7 +13,7 @@ from . import __version__, host
 REPO_URL = "https://github.com/gluonstream/llm.git"
 LAST_VERSION_URL = (
     "https://raw.githubusercontent.com/gluonstream/llm/"
-    "refs/heads/main/LAST_VERSION.md")
+    "main/LAST_VERSION.md")
 CHECKOUT_NAME = "llm-update"
 BRANCH = "main"
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
