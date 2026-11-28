@@ -91,6 +91,24 @@ class RegistryTest(unittest.TestCase):
                 "sampling": {"temperature": 0.7, "top_p": 1.0,
                              "min_p": 0.01, "repeat_penalty": 1.0}}
 
+    def _runtime(self, **overrides):
+        runtime = {
+            "kv_type_k": "q8_0",
+            "kv_type_v": "q8_0",
+            "flash_attn": "on",
+            "batch": 2048,
+            "ubatch": 512,
+            "parallel": 1,
+            "cache_prompt": True,
+            "cache_reuse": 256,
+            "fit": True,
+            "fit_target": 2048,
+            "kv_unified": True,
+            "no_kv_offload": False,
+        }
+        runtime.update(overrides)
+        return runtime
+
     def test_load_merges_user_models(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = Path(tmp) / "models.json"
@@ -288,6 +306,68 @@ class RegistryTest(unittest.TestCase):
             registry.write_text(json.dumps({"mine": self._profile()}))
             self.assertEqual(config.context_source("mine", path=registry), "user")
             self.assertEqual(config.context_source("nope", path=registry), "unknown")
+
+    def test_runtime_override_valid_and_applied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            runtime = self._runtime()
+            registry.write_text(json.dumps({
+                "overrides": {config.DEFAULT: {
+                    "context": 65536, "runtime": runtime}}}))
+            merged = config.load_profiles(path=registry, discovered={})
+            self.assertEqual(merged[config.DEFAULT]["context"], 65536)
+            self.assertEqual(merged[config.DEFAULT]["runtime"], runtime)
+            # The override's runtime is copied, not shared.
+            runtime["batch"] = 1
+            self.assertEqual(merged[config.DEFAULT]["runtime"]["batch"], 2048)
+
+    def test_invalid_runtime_override_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({
+                "overrides": {"x": {
+                    "context": 65536,
+                    "runtime": {"kv_type_k": "q3_k", "flash_attn": "loud",
+                                "batch": 0, "cache_reuse": 64}}}}))
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides, {})
+            self.assertTrue(reg.invalid)
+
+    def test_set_tuning_builtin_and_user(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            runtime = self._runtime()
+            # Built-in id: written as an override.
+            config.set_tuning(config.DEFAULT, 65536, runtime, path=registry)
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides[config.DEFAULT]["context"], 65536)
+            self.assertEqual(reg.overrides[config.DEFAULT]["runtime"], runtime)
+            # User id: written into the user model entry.
+            registry.write_text(json.dumps({"mine": self._profile()}))
+            config.set_tuning("mine", 131072, runtime, path=registry)
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.models["mine"]["context"], 131072)
+            self.assertEqual(reg.models["mine"]["runtime"], runtime)
+            self.assertNotIn("mine", reg.overrides)
+
+    def test_set_tuning_preserves_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            runtime = self._runtime()
+            # A built-in that already has a context override keeps it when a
+            # runtime is added.
+            config.set_context(config.DEFAULT, 65536, path=registry)
+            config.set_tuning(config.DEFAULT, 65536, runtime, path=registry)
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides[config.DEFAULT]["context"], 65536)
+            self.assertEqual(reg.overrides[config.DEFAULT]["runtime"], runtime)
+
+    def test_set_tuning_rejects_invalid_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            with self.assertRaises(config.ModelError):
+                config.set_tuning(config.DEFAULT, 65536,
+                                  {"kv_type_k": "q3_k"}, path=registry)
 
     def test_context_source_reports_cache_for_discovered(self):
         with tempfile.TemporaryDirectory() as tmp:

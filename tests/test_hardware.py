@@ -190,6 +190,16 @@ class HardwareTest(unittest.TestCase):
             hardware.estimate_required(4 * hardware.GIB, 8192, metadata),
             4 * hardware.GIB + hardware.GIB + hardware.GIB + 256 * 1024 * 1024)
 
+    def test_estimate_required_typed_kv(self):
+        metadata = model_metadata()
+        f16 = hardware.estimate_required(4 * hardware.GIB, 8192, metadata)
+        q8 = hardware.estimate_required(4 * hardware.GIB, 8192, metadata,
+                                        "q8_0", "q8_0")
+        # The q8_0 KV cache is 1.0625/2.0 of the f16 cache, so the estimate
+        # drops by exactly the saved KV bytes.
+        saved = hardware.GIB - int(hardware.GIB * 1.0625 / 2.0)
+        self.assertEqual(q8, f16 - saved)
+
     def test_choose_context_prefers_128k_when_it_fits(self):
         choice = hardware.choose_context(4 * hardware.GIB, 8192,
                                          machine(36 * hardware.GIB),

@@ -465,9 +465,10 @@ def context_budget(machine):
     return memory_budget(machine.total_ram, False, machine.available_ram)
 
 
-def estimate_required(model_size, context=8192, metadata=None):
+def estimate_required(model_size, context=8192, metadata=None,
+                      kv_type_k="f16", kv_type_v="f16"):
     if metadata:
-        kv_bytes = gguf.kv_cache_bytes(metadata, context)
+        kv_bytes = gguf.kv_cache_bytes(metadata, context, kv_type_k, kv_type_v)
         if kv_bytes is not None:
             overhead = max(GIB, int(model_size * 0.05)) + 256 * 1024 * 1024
             return model_size + kv_bytes + overhead
@@ -476,7 +477,8 @@ def estimate_required(model_size, context=8192, metadata=None):
 
 
 def choose_context(model_size, current, machine, metadata=None,
-                   candidates=(131072, 65536), ceiling=None):
+                   candidates=(131072, 65536), ceiling=None,
+                   kv_type_k="f16", kv_type_v="f16"):
     approximate = metadata is None
     native = gguf.native_context(metadata) if metadata else None
     budget = context_budget(machine)
@@ -489,12 +491,14 @@ def choose_context(model_size, current, machine, metadata=None,
     if ceiling is not None:
         values = [value for value in values if value <= ceiling]
     for value in values:
-        required = estimate_required(model_size, value, metadata)
+        required = estimate_required(model_size, value, metadata,
+                                     kv_type_k, kv_type_v)
         if required <= budget:
             reason = "fits (approximate)" if approximate else "fits"
             return ContextChoice(value, reason, required, budget, approximate,
                                  native)
-    required = estimate_required(model_size, current, metadata)
+    required = estimate_required(model_size, current, metadata,
+                                 kv_type_k, kv_type_v)
     if capped_current:
         reason = "no candidate <= ceiling fits; keeping current"
     else:

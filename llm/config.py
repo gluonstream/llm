@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import hfcache, host
+from . import gguf, hfcache, host
 
 HOME = Path.home()
 STATE = Path(os.environ.get(
@@ -109,12 +109,52 @@ def load_user_profiles(path=None):
     return profiles
 
 
+def _validate_runtime(runtime):
+    """Return ``(clean, errors)`` for a runtime override dict.
+
+    ``clean`` holds only the known, valid keys; ``errors`` describes each
+    unknown key or bad value so callers can report and ignore it.
+    """
+    if not isinstance(runtime, dict):
+        return None, ["runtime must be an object"]
+    valid_kv = set(gguf.KV_BYTES_PER_ELEMENT)
+    clean = {}
+    errors = []
+    for key, value in runtime.items():
+        if key in ("kv_type_k", "kv_type_v"):
+            if not isinstance(value, str) or value not in valid_kv:
+                errors.append("%s must be one of %s"
+                              % (key, ", ".join(sorted(valid_kv))))
+                continue
+            clean[key] = value
+        elif key == "flash_attn":
+            if value not in ("on", "off", "auto"):
+                errors.append("flash_attn must be on, off, or auto")
+                continue
+            clean[key] = value
+        elif key in ("batch", "ubatch", "parallel", "cache_reuse",
+                     "fit_target"):
+            if isinstance(value, bool) or type(value) is not int or value <= 0:
+                errors.append("%s must be a positive integer" % key)
+                continue
+            clean[key] = value
+        elif key in ("cache_prompt", "fit", "kv_unified", "no_kv_offload"):
+            if type(value) is not bool:
+                errors.append("%s must be a boolean" % key)
+                continue
+            clean[key] = value
+        else:
+            errors.append("unknown runtime key %r" % key)
+    return clean, errors
+
+
 def load_registry(path=None):
     """Read models.json, accepting the legacy flat or wrapped shape.
 
     Returns a Registry whose ``models`` hold only dict profiles (excluding a
     literal ``overrides`` key) and whose ``overrides`` hold only validated
-    ``{"context": n}`` entries; anything else is pushed to ``invalid``.
+    ``{"context": n, "runtime": {...}}`` entries; anything else is pushed to
+    ``invalid``.
     """
     path = USER_MODELS if path is None else Path(path)
     try:
@@ -145,7 +185,17 @@ def load_registry(path=None):
                 invalid.append(
                     (model_id, "override context must be a positive integer"))
                 continue
-            overrides[model_id] = {"context": context}
+            entry = {"context": context}
+            if "runtime" in override:
+                clean_runtime, runtime_errors = _validate_runtime(
+                    override.get("runtime"))
+                if runtime_errors:
+                    invalid.append(
+                        (model_id, "runtime: " + "; ".join(runtime_errors)))
+                    continue
+                if clean_runtime:
+                    entry["runtime"] = clean_runtime
+            overrides[model_id] = entry
     return Registry(models, overrides, wrapped, invalid)
 
 
@@ -295,7 +345,10 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
     for model_id, override in registry.overrides.items():
         if model_id in merged:
             merged[model_id] = dict(merged[model_id])
-            merged[model_id]["context"] = override["context"]
+            if "context" in override:
+                merged[model_id]["context"] = override["context"]
+            if "runtime" in override:
+                merged[model_id]["runtime"] = dict(override["runtime"])
         else:
             warnings.append("ignored override for unknown model %r" % model_id)
     for model_id, reason in registry.invalid:
@@ -349,6 +402,28 @@ def set_context(model_id, context, path=None):
         registry.overrides.pop(model_id, None)
     elif model_id in BUILTIN_PROFILES or model_id in PROFILES:
         registry.overrides[model_id] = {"context": context}
+    else:
+        raise ModelError("Unknown model %r" % model_id)
+    save_registry(registry, path)
+
+
+def set_tuning(model_id, context, runtime, path=None):
+    """Validate and write a model's context and runtime atomically."""
+    if type(context) is not int or context <= 0:
+        raise ModelError("context must be a positive integer, got %r"
+                         % (context,))
+    clean_runtime, errors = _validate_runtime(runtime)
+    if errors:
+        raise ModelError("invalid runtime: " + "; ".join(errors))
+    registry = load_registry(path)
+    if model_id in registry.models:
+        registry.models[model_id] = dict(registry.models[model_id])
+        registry.models[model_id]["context"] = context
+        registry.models[model_id]["runtime"] = clean_runtime
+        registry.overrides.pop(model_id, None)
+    elif model_id in BUILTIN_PROFILES or model_id in PROFILES:
+        registry.overrides[model_id] = {
+            "context": context, "runtime": clean_runtime}
     else:
         raise ModelError("Unknown model %r" % model_id)
     save_registry(registry, path)
