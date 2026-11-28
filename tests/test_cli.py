@@ -342,6 +342,64 @@ class GetCacheTest(unittest.TestCase):
         self.assertEqual(profile["context"], 2048)
 
 
+class BuiltinGetTest(unittest.TestCase):
+    """`get` on a built-in repo must not try to re-register the built-in."""
+
+    COMMIT = "a" * 40
+
+    def test_get_builtin_repo_does_not_register(self):
+        builtin = config.BUILTIN_PROFILES["inkling-2-mini-gguf-ud-q4-k-xl"]
+        repo = builtin["repo"]
+        filename = builtin["filename"]
+        payload = b"gguf-bytes"
+        sha = hashlib.sha256(payload).hexdigest()
+        chosen = {"name": filename, "size": len(payload), "sha256": sha}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = (root / "hub").resolve()
+            state = root / "state" / "llm"
+            blob = cache / "models--unsloth--Inkling-2-Mini-GGUF" / "blobs" / sha
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            blob.write_bytes(payload)
+            manifest = state / "manifests" / (builtin["id"] + ".json")
+
+            with mock.patch.dict(os.environ, {"HF_HUB_CACHE": str(cache)}), \
+                 mock.patch.object(config, "STATE", state), \
+                 mock.patch.object(config, "PROFILES",
+                                   {builtin["id"]: dict(builtin)}), \
+                 mock.patch.object(config, "migrate_state",
+                                   return_value=False), \
+                 mock.patch.object(hub, "repo_info",
+                                   return_value=(self.COMMIT, [chosen])), \
+                 mock.patch.object(hub, "select_file", return_value=chosen), \
+                 mock.patch.object(hub, "download_blob", return_value=blob), \
+                 mock.patch.object(hub, "sha256_file", return_value=sha), \
+                 mock.patch.object(hub, "write_manifest",
+                                   return_value=manifest), \
+                 mock.patch.object(config, "register_model") as register, \
+                 redirect_stdout(io.StringIO()) as out, \
+                 redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.main(["get", repo + ":Q4"]), 0)
+
+            register.assert_not_called()
+            self.assertIn("built-in", out.getvalue())
+            self.assertTrue(blob.is_file())
+
+    def test_list_prints_profile_warnings(self):
+        warnings = ["dropped user model 'dup': alias 'q' is already used by x"]
+        buffer = io.StringIO()
+        with mock.patch.object(config, "PROFILE_WARNINGS", warnings), \
+             mock.patch.object(config, "selected_profile",
+                               return_value=config.PROFILES[config.DEFAULT]), \
+             mock.patch.object(service, "running", return_value=None), \
+             mock.patch.object(service, "last_failure", return_value=None), \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             redirect_stdout(io.StringIO()), redirect_stderr(buffer):
+            self.assertEqual(cli.main(["list"]), 0)
+        self.assertIn("warning: dropped user model", buffer.getvalue())
+
+
 class MigrateCacheCliTest(unittest.TestCase):
     def test_migrate_cache_dry_run_prints_table(self):
         entry = {

@@ -228,6 +228,9 @@ def migrate(entry, root=None, dry_run=False, verify=False, keep_old=False):
                 continue
             record["status"] = "already present"
             record["method"] = "reused"
+            if not verify:
+                record["message"] = ("reused existing blob; size matched; "
+                                     "run --verify to confirm")
             migrated_paths.append(str(source))
             continue
 
@@ -261,17 +264,20 @@ def migrate(entry, root=None, dry_run=False, verify=False, keep_old=False):
             os.link(source, blob)
             record["method"] = "hardlink"
         except OSError:
-            shutil.copy2(source, blob)
-            record["method"] = "copy"
+            try:
+                shutil.copy2(source, blob)
+                record["method"] = "copy"
+            except OSError as exc:
+                record["status"] = "error"
+                record["message"] = "copy failed: %s" % exc
+                continue
 
-        snapshot = hfcache.expected_snapshot(repo, filename, commit, root=root)
-        snapshot.parent.mkdir(parents=True, exist_ok=True)
-        if snapshot.is_symlink() or snapshot.exists():
-            if snapshot.is_dir() and not snapshot.is_symlink():
-                shutil.rmtree(snapshot)
-            else:
-                snapshot.unlink()
-        os.symlink(os.path.relpath(blob, snapshot.parent), snapshot)
+        try:
+            hfcache.link_snapshot(repo, filename, commit, blob, root=root)
+        except ValueError as exc:
+            record["status"] = "error"
+            record["message"] = "unsafe snapshot path: %s" % exc
+            continue
         record["status"] = "migrated"
         migrated_paths.append(str(source))
 
@@ -288,12 +294,17 @@ def migrate(entry, root=None, dry_run=False, verify=False, keep_old=False):
         overall = "missing"
 
     leftover = []
+    removal_error = None
     complete = bool(statuses) and all(
         status in ("migrated", "already present") for status in statuses)
     if complete and not dry_run and not keep_old:
         leftover = _unrelated_files(source_dir, migrated_paths)
-        if not leftover:
-            shutil.rmtree(str(source_dir), ignore_errors=True)
+        if not leftover and source_dir.is_dir():
+            try:
+                shutil.rmtree(str(source_dir))
+            except OSError as exc:
+                removal_error = "could not remove old directory %s: %s" % (
+                    source_dir, exc)
 
     if (overall == "migrated" and not dry_run and revision == "main"):
         _write_ref(repo, commit, root)
@@ -305,4 +316,5 @@ def migrate(entry, root=None, dry_run=False, verify=False, keep_old=False):
         "status": overall,
         "files": results,
         "leftover": [str(path) for path in leftover],
+        "removal_error": removal_error,
     }

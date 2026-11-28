@@ -333,3 +333,43 @@ class CacheProfileTest(unittest.TestCase):
                                 for item in enabled.values()))
             self.assertFalse(any(item.get("source") == "cache"
                                  for item in disabled.values()))
+
+
+class WarningTest(unittest.TestCase):
+    def test_dropped_user_alias_produces_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            alias = config.BUILTIN_PROFILES[config.DEFAULT]["alias"]
+            registry.write_text(json.dumps({"other": {
+                "id": "other", "alias": alias, "path": "/tmp/x",
+                "context": 1, "sampling": {}}}))
+            warnings = []
+            merged = config.load_profiles(path=registry, discovered={},
+                                          warnings=warnings)
+            self.assertNotIn("other", merged)
+            self.assertTrue(any("other" in w and "alias" in w
+                                for w in warnings))
+
+    def test_skipped_discovered_model_produces_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            alias = config.BUILTIN_PROFILES[config.DEFAULT]["alias"]
+            discovered = {"dup": profile("dup", alias, path="/tmp/dup.gguf")}
+            warnings = []
+            config.load_profiles(path=registry, discovered=discovered,
+                                 warnings=warnings)
+            self.assertTrue(any("dup" in w and "alias" in w for w in warnings))
+
+    def test_dropped_user_profile_does_not_suppress_discovered_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            alias = config.BUILTIN_PROFILES[config.DEFAULT]["alias"]
+            registry.write_text(json.dumps({"dropped": {
+                "id": "dropped", "alias": alias,
+                "path": "/tmp/shared.gguf", "context": 1, "sampling": {}}}))
+            discovered = {"kept": profile("kept", "kept",
+                                          path="/tmp/shared.gguf")}
+            merged = config.load_profiles(path=registry,
+                                          discovered=discovered)
+            self.assertNotIn("dropped", merged)
+            self.assertIn("kept", merged)

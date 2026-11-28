@@ -54,6 +54,8 @@ def cmd_list(args):
     sizes = {profile_id: _local_size(profile) for profile_id, profile in profiles.items()}
     running = _running_info(profiles)
     failure = None if (running and running["ready"]) else service.last_failure()
+    for warning in config.PROFILE_WARNINGS:
+        print("warning: " + warning, file=sys.stderr)
     print(render.format_list(profiles, selected["id"], sizes, running, failure))
     print()
     print("Service %s.   Endpoint %s/v1"
@@ -277,6 +279,14 @@ def cmd_get(args):
             sampling=config.DEFAULT_SAMPLING)
     if args.requires_llama_cpp:
         profile["min_llama_cpp"] = args.requires_llama_cpp
+    if existing and existing["id"] in config.BUILTIN_PROFILES:
+        manifest = hub.write_manifest(
+            config.STATE / "manifests" / (model_id + ".json"), repo,
+            chosen["name"], args.revision, size, sha256, commit=commit)
+        print("Already present as built-in %s (%s); verified %s"
+              % (alias, model_id, chosen["name"]))
+        print("Manifest: %s" % manifest)
+        return 0
     config.register_model(profile)
     manifest = hub.write_manifest(
         config.STATE / "manifests" / (model_id + ".json"), repo,
@@ -326,6 +336,8 @@ def cmd_migrate_cache(args):
         if result["leftover"]:
             print("  kept old directory; %d unrelated file(s) remain"
                   % len(result["leftover"]))
+        if result.get("removal_error"):
+            print("  warning: " + result["removal_error"], file=sys.stderr)
 
     print()
     if args.dry_run:

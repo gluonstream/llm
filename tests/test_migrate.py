@@ -275,5 +275,78 @@ class MigrateTest(unittest.TestCase):
                          ["README.txt"])
 
 
+    def test_migrate_refuses_unsafe_snapshot_path(self):
+        payload = b"safe payload"
+        source = self.write(self.legacy / "graphify-model" / "model.gguf",
+                            payload)
+        entry = self.entry({"model.gguf": payload})
+        entry["files"][0]["filename"] = "../../../evil.gguf"
+
+        result = migrate.migrate(entry, root=self.cache)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["files"][0]["status"], "error")
+        self.assertIn("unsafe", result["files"][0]["message"].lower())
+        self.assertTrue(source.exists())
+        self.assertFalse((self.cache / "evil.gguf").exists())
+        self.assertFalse((self.repo() / "evil.gguf").exists())
+
+    def test_migrate_copy_failure_is_recorded(self):
+        payload = b"copy failure bytes"
+        source = self.write(self.legacy / "graphify-model" / "model.gguf",
+                            payload)
+        entry = self.entry({"model.gguf": payload})
+
+        with mock.patch.object(migrate.os, "link",
+                               side_effect=OSError("cross-device")), \
+             mock.patch.object(migrate.shutil, "copy2",
+                               side_effect=OSError("disk full")):
+            result = migrate.migrate(entry, root=self.cache)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["files"][0]["status"], "error")
+        self.assertIn("copy failed", result["files"][0]["message"])
+        self.assertTrue(source.exists())
+
+    def test_migrate_verify_success(self):
+        payload = b"verified bytes"
+        source = self.write(self.legacy / "graphify-model" / "model.gguf",
+                            payload)
+        entry = self.entry({"model.gguf": payload})
+
+        result = migrate.migrate(entry, root=self.cache, verify=True)
+
+        self.assertEqual(result["status"], "migrated")
+        self.assertEqual(result["files"][0]["status"], "migrated")
+        blob = self.repo() / "blobs" / digest(payload)
+        self.assertEqual(blob.read_bytes(), payload)
+        self.assertFalse(source.exists())
+
+    def test_migrate_reports_removal_error(self):
+        payload = b"removal error bytes"
+        source = self.write(self.legacy / "graphify-model" / "model.gguf",
+                            payload)
+        entry = self.entry({"model.gguf": payload})
+
+        with mock.patch.object(migrate.shutil, "rmtree",
+                               side_effect=OSError("permission denied")):
+            result = migrate.migrate(entry, root=self.cache)
+
+        self.assertEqual(result["status"], "migrated")
+        self.assertIn("could not remove old directory",
+                      result["removal_error"])
+        self.assertTrue(source.exists())
+
+    def test_migrate_reused_blob_reports_verify_hint(self):
+        payload = b"reused bytes"
+        source = self.write(self.legacy / "graphify-model" / "model.gguf",
+                            payload)
+        entry = self.entry({"model.gguf": payload})
+        migrate.migrate(entry, root=self.cache, keep_old=True)
+        second = migrate.migrate(entry, root=self.cache, keep_old=True)
+        self.assertEqual(second["files"][0]["status"], "already present")
+        self.assertIn("run --verify", second["files"][0]["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

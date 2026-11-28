@@ -133,6 +133,8 @@ def _resolve_builtin(profile):
 
 
 def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
+    if warnings is None:
+        warnings = []
     source = BUILTIN_PROFILES if builtin is None else builtin
     merged = {model_id: _resolve_builtin(profile)
               for model_id, profile in source.items()}
@@ -144,9 +146,35 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
             aliases[alias] = model_id
 
     user_profiles = load_user_profiles(path)
+
+    # Decide which user profiles survive before discovering cache models, so a
+    # user profile that will itself be dropped cannot suppress a valid
+    # discovered model through identity dedupe.
+    kept_users = {}
+    user_ids = set()
+    for model_id, profile in user_profiles.items():
+        if model_id in builtin_ids:
+            warnings.append("dropped user model %r: id matches a built-in model"
+                            % model_id)
+            continue
+        alias = _alias(profile)
+        if alias and alias in aliases:
+            owner = aliases[alias]
+            if owner in builtin_ids or owner in user_ids:
+                warnings.append("dropped user model %r: alias %r is already used by %s"
+                                % (model_id, alias, owner))
+                continue
+            # The owner is a discovered model; the user profile takes its alias.
+            del aliases[alias]
+        kept_users[model_id] = profile
+        user_ids.add(model_id)
+        if alias:
+            aliases[alias] = model_id
+
+    # Seed identity dedupe from profiles actually merged (built-ins + kept users).
     sources = set()
     paths = set()
-    for profile in list(merged.values()) + list(user_profiles.values()):
+    for profile in list(merged.values()) + list(kept_users.values()):
         model_source, model_path = _identity(profile)
         if model_source:
             sources.add(model_source)
@@ -160,10 +188,14 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
             continue
         alias = _alias(profile)
         if alias and alias in aliases:
+            warnings.append("skipped discovered model %r: alias %r is already used by %s"
+                            % (model_id, alias, aliases[alias]))
             continue
         model_source, model_path = _identity(profile)
         if ((model_source and model_source in sources)
                 or (model_path and model_path in paths)):
+            warnings.append("skipped discovered model %r: duplicate of an already-registered model"
+                            % model_id)
             continue
         merged[model_id] = dict(profile)
         if model_source:
@@ -173,36 +205,32 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
         if alias:
             aliases[alias] = model_id
 
-    user_ids = set()
-    for model_id, profile in user_profiles.items():
-        if model_id in builtin_ids:
-            continue
+    # Merge kept user profiles over built-ins and discovered models.
+    for model_id, profile in kept_users.items():
         alias = _alias(profile)
         if model_id in merged:
             previous = aliases.get(_alias(merged[model_id]))
             if previous == model_id:
                 del aliases[_alias(merged[model_id])]
-        if alias and alias in aliases:
-            owner = aliases[alias]
-            if owner in builtin_ids or owner in user_ids:
-                continue
-            merged.pop(owner, None)
-            del aliases[alias]
         merged[model_id] = profile
-        user_ids.add(model_id)
         if alias:
             aliases[alias] = model_id
     return merged
 
 
 def reload_profiles(path=None, builtin=None, warnings=None, discovered=None):
-    global PROFILES
+    global PROFILES, PROFILE_WARNINGS
+    if warnings is None:
+        warnings = []
     PROFILES = load_profiles(path=path, builtin=builtin, warnings=warnings,
                              discovered=discovered)
+    PROFILE_WARNINGS = warnings
     return PROFILES
 
 
-PROFILES = load_profiles()
+# Warnings collected by the most recent profile load (import or reload).
+PROFILE_WARNINGS = []
+PROFILES = load_profiles(warnings=PROFILE_WARNINGS)
 
 
 def register_model(profile, path=None, profiles=None):
