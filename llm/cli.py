@@ -856,16 +856,30 @@ def _program_name():
 def build_parser(prog=None):
     global _subparsers
     program = prog or _program_name()
+    examples = (
+        "list",
+        "analyze",
+        "analyze --context 131072",
+        "context inkling auto",
+        "apply",
+        "apply --runtime-policy extended",
+        "apply --runtime-policy extended --sync-opencode",
+        "apply --sync-clients",
+        "remove qwen2.5-7b-instruct-graphify --dry-run",
+        "migrate-cache --dry-run",
+        "search inkling",
+        "get unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_XL",
+        "use inkling",
+        "start",
+        "logs -f",
+        "doctor",
+        "version",
+    )
     parser = argparse.ArgumentParser(
         prog=program,
         description="Manage the persistent local llama.cpp model server.",
-        epilog=("examples:\n"
-                "  %s list\n"
-                "  %s search inkling\n"
-                "  %s get unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_XL\n"
-                "  %s use inkling\n"
-                "  %s logs -f\n"
-                "  %s doctor") % ((program,) * 6),
+        epilog="examples:\n" + "\n".join(
+            "  %s %s" % (program, example) for example in examples),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     _subparsers = {}

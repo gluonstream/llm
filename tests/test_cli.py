@@ -41,6 +41,9 @@ class CliTest(unittest.TestCase):
         text = buffer.getvalue()
         for command in ("list", "status", "use", "doctor", "logs", "version"):
             self.assertIn(command, text)
+        for example in ("analyze", "apply", "--runtime-policy extended",
+                        "--sync-opencode", "remove qwen2.5-7b-instruct-graphify --dry-run"):
+            self.assertIn(example, text)
 
     def test_prog_follows_invocation_name(self):
         with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/llm"]):
