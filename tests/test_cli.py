@@ -603,24 +603,24 @@ class VersionCliTest(unittest.TestCase):
         return buffer.getvalue()
 
     def test_version_prints_installed_and_up_to_date(self):
-        with mock.patch.object(update, "latest_version", return_value="1.4.4"):
+        with mock.patch.object(update, "latest_version", return_value="1.4.5"):
             self.assertEqual(self._output(["version"]).splitlines(), [
-                "llm 1.4.4",
-                "last version is 1.4.4. you are up to date.",
+                "llm 1.4.5",
+                "last version is 1.4.5. you are up to date.",
             ])
 
     def test_version_uses_invocation_name(self):
         with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/lmm"]), \
-             mock.patch.object(update, "latest_version", return_value="1.4.4"):
+             mock.patch.object(update, "latest_version", return_value="1.4.5"):
             lines = self._output(["version"]).splitlines()
-        self.assertEqual(lines[0], "lmm 1.4.4")
+        self.assertEqual(lines[0], "lmm 1.4.5")
 
     def test_version_points_to_update_when_latest_is_newer(self):
-        with mock.patch.object(update, "latest_version", return_value="1.4.5"):
+        with mock.patch.object(update, "latest_version", return_value="1.4.6"):
             lines = self._output(["version"]).splitlines()
         self.assertEqual(lines, [
-            "llm 1.4.4",
-            "last version is 1.4.5. run `llm update` to update.",
+            "llm 1.4.5",
+            "last version is 1.4.6. run `llm update` to update.",
         ])
 
     def test_update_skips_when_latest_is_not_newer(self):
