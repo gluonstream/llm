@@ -418,3 +418,47 @@ Expected: all pass; `llm list` shows exactly the three built-ins plus the two di
 git add llm/config.py tests/test_config.py
 git commit -m "fix: dedupe discovered cache models against known profiles"
 ```
+
+---
+
+### Task 6: Quiet expected dedupe warnings
+
+**Files:**
+- Modify: `llm/config.py`
+- Test: `tests/test_config.py`
+
+**Interfaces:**
+- Consumes: `load_profiles` warning population.
+- Produces: no warning for a discovered profile skipped because it duplicates an already-registered profile by `(repo, filename)` or resolved path; warnings remain for dropped user models and for discovered id/alias collisions that skip a *different* model.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_expected_dedupe_does_not_warn(self)
+    # built-in qwen + discovered qwen with the same repo/filename
+    # -> warnings list is empty
+
+def test_dropped_user_model_still_warns(self)
+    # user alias collides with a built-in -> one warning remains
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m unittest tests.test_config -v`
+Expected: the dedupe warning is present, so the assertions fail.
+
+- [ ] **Step 3: Implement**
+
+Remove the `warnings.append(... "duplicate of an already-registered model")` path for identity dedupe (repo/filename/path). Keep the warnings for dropped user models and for discovered profiles skipped by id/alias collision.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python3 -m unittest tests.test_config -v`
+Expected: all pass; `llm list` is quiet on a normal cache.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/config.py tests/test_config.py
+git commit -m "fix: do not warn for expected cache dedupe"
+```
