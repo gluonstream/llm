@@ -369,6 +369,58 @@ class RegistryTest(unittest.TestCase):
                 config.set_tuning(config.DEFAULT, 65536,
                                   {"kv_type_k": "q3_k"}, path=registry)
 
+    def test_runtime_validation_new_fields(self):
+        clean, errors = config._validate_runtime({
+            "spec_type": "draft-mtp", "draft_model": "/tmp/draft.gguf",
+            "cmoe": True, "reasoning": "on", "reasoning_budget": 1024,
+            "devices": "0,1", "top_k": 80, "n_predict": 512,
+        })
+        self.assertEqual(errors, [])
+        self.assertEqual(clean["spec_type"], "draft-mtp")
+        self.assertEqual(clean["draft_model"], "/tmp/draft.gguf")
+        self.assertTrue(clean["cmoe"])
+        self.assertEqual(clean["reasoning"], "on")
+        self.assertEqual(clean["reasoning_budget"], 1024)
+        self.assertEqual(clean["devices"], "0,1")
+        self.assertEqual(clean["top_k"], 80)
+        self.assertEqual(clean["n_predict"], 512)
+
+        # A list of devices is accepted; bad values are reported and dropped.
+        clean, errors = config._validate_runtime({
+            "devices": ["0", "1"], "spec_type": "bogus",
+            "reasoning": "loud", "top_k": "many", "n_predict": 1.5,
+            "reasoning_budget": -5, "draft_model": 3,
+        })
+        self.assertEqual(clean["devices"], "0,1")
+        self.assertNotIn("spec_type", clean)
+        self.assertNotIn("reasoning", clean)
+        self.assertNotIn("top_k", clean)
+        self.assertNotIn("n_predict", clean)
+        self.assertNotIn("reasoning_budget", clean)
+        self.assertNotIn("draft_model", clean)
+        self.assertTrue(any("spec_type" in e for e in errors))
+        self.assertTrue(any("reasoning" in e for e in errors))
+
+    def test_set_tuning_persists_generation_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            runtime = self._runtime(spec_type="draft-simple",
+                                    draft_model="/tmp/draft.gguf",
+                                    cmoe=True, reasoning="on",
+                                    reasoning_budget=2048, devices="0,1",
+                                    top_k=64, n_predict=256)
+            config.set_tuning(config.DEFAULT, 65536, runtime, path=registry)
+            reg = config.load_registry(registry)
+            saved = reg.overrides[config.DEFAULT]["runtime"]
+            self.assertEqual(saved["spec_type"], "draft-simple")
+            self.assertEqual(saved["draft_model"], "/tmp/draft.gguf")
+            self.assertTrue(saved["cmoe"])
+            self.assertEqual(saved["reasoning"], "on")
+            self.assertEqual(saved["reasoning_budget"], 2048)
+            self.assertEqual(saved["devices"], "0,1")
+            self.assertEqual(saved["top_k"], 64)
+            self.assertEqual(saved["n_predict"], 256)
+
     def test_cache_reuse_zero_is_valid_and_persisted(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = Path(tmp) / "models.json"

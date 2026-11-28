@@ -195,6 +195,72 @@ class RuntimeArgsTest(unittest.TestCase):
         self.assertNotIn("--cache-reuse", args)
         self.assertIn("--cache-prompt", args)
 
+    def _generation_runtime(self, **overrides):
+        runtime = {
+            "spec_type": "draft-mtp", "draft_model": "/tmp/draft.gguf",
+            "cmoe": True, "reasoning": "off", "reasoning_budget": 1024,
+            "devices": "0,1", "top_k": 80, "n_predict": 512,
+        }
+        runtime.update(overrides)
+        return runtime
+
+    def test_server_args_speculative_flags(self):
+        profile = self._profile(runtime=self._generation_runtime())
+        supported = {"-md", "--spec-type", "-cmoe"}
+        pairs = _pairs(service.server_args(profile, supported=supported))
+        self.assertEqual(pairs["-md"], "/tmp/draft.gguf")
+        self.assertEqual(pairs["--spec-type"], "draft-mtp")
+        self.assertIs(pairs["-cmoe"], True)
+
+    def test_server_args_generation_flags(self):
+        profile = self._profile(runtime=self._generation_runtime())
+        supported = {"-rea", "--reasoning-budget", "-dev", "--top-k", "-n"}
+        pairs = _pairs(service.server_args(profile, supported=supported))
+        self.assertEqual(pairs["-rea"], "off")
+        self.assertEqual(pairs["--reasoning-budget"], "1024")
+        self.assertEqual(pairs["-dev"], "0,1")
+        self.assertEqual(pairs["--top-k"], "80")
+        self.assertEqual(pairs["-n"], "512")
+
+    def test_server_args_unsupported_spec_flags_omitted(self):
+        profile = self._profile(runtime=self._generation_runtime())
+        args = service.server_args(profile, supported=set())
+        for flag in ("-md", "--spec-type", "-cmoe", "-rea",
+                     "--reasoning-budget", "-dev", "--top-k", "-n"):
+            self.assertNotIn(flag, args)
+
+    def test_server_args_skip_unset_generation_defaults(self):
+        profile = self._profile(runtime={
+            "spec_type": "none", "draft_model": "", "cmoe": False,
+            "reasoning": "auto", "reasoning_budget": -1, "devices": "",
+            "top_k": 40, "n_predict": -1})
+        supported = {"-md", "--spec-type", "-cmoe", "-rea",
+                     "--reasoning-budget", "-dev", "--top-k", "-n"}
+        args = service.server_args(profile, supported=supported)
+        pairs = _pairs(args)
+        self.assertNotIn("-md", pairs)
+        self.assertNotIn("--spec-type", pairs)
+        self.assertNotIn("-cmoe", pairs)
+        self.assertNotIn("--reasoning-budget", pairs)
+        self.assertNotIn("-dev", pairs)
+        self.assertNotIn("-n", pairs)
+        # top_k=40 is a real sampling default, so it is emitted.
+        self.assertEqual(pairs["--top-k"], "40")
+
+    def test_server_args_reasoning_devices_list_and_qwen_default(self):
+        # A list form of devices is normalized to a comma string.
+        profile = self._profile(runtime={
+            "reasoning": "auto", "devices": ["0", "1"]})
+        supported = {"-rea", "-dev"}
+        pairs = _pairs(service.server_args(profile, supported=supported))
+        self.assertEqual(pairs["-dev"], "0,1")
+        self.assertEqual(pairs["-rea"], "auto")
+
+        # The qwen built-in keeps --reasoning off when reasoning is auto/unset.
+        qwen = dict(profile, id="qwen2.5-7b-instruct-q4-k-m")
+        pairs = _pairs(service.server_args(qwen, supported={"-rea"}))
+        self.assertEqual(pairs["-rea"], "off")
+
 
 class SafetyTest(unittest.TestCase):
     def test_stale_pid_is_not_running(self):

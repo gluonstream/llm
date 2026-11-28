@@ -114,6 +114,28 @@ class RenderTest(unittest.TestCase):
         self.assertIn("no-fit", text)
         self.assertIn("cache-reuse 0", text)
 
+    def test_runtime_summary_includes_spec_and_cmoe(self):
+        runtime = {
+            "kv_type_k": "q8_0", "kv_type_v": "q8_0",
+            "batch": 2048, "ubatch": 512, "fit": True, "fit_target": 2048,
+            "cache_reuse": 256,
+            "spec_type": "draft-simple", "draft_model": "/tmp/draft.gguf",
+            "cmoe": True, "reasoning": "off", "top_k": 40, "n_predict": 512,
+        }
+        text = render.runtime_summary(runtime)
+        self.assertIn("spec draft-simple", text)
+        self.assertIn("cmoe", text)
+        self.assertIn("reasoning off", text)
+
+        # A plain runtime (no spec/cmoe) keeps the old summary shape.
+        plain = render.runtime_summary({
+            "kv_type_k": "q8_0", "kv_type_v": "q8_0",
+            "batch": 2048, "ubatch": 512, "fit": True, "fit_target": 2048,
+            "cache_reuse": 256,
+        })
+        self.assertNotIn("spec", plain)
+        self.assertNotIn("cmoe", plain)
+
     def test_format_apply_includes_kv_and_batch(self):
         rows = [{"model": "qwen", "size": 17629760736, "old": 8192,
                  "new": 131072, "required": 30000000000, "action": "updated",

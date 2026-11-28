@@ -118,6 +118,7 @@ def _validate_runtime(runtime):
     if not isinstance(runtime, dict):
         return None, ["runtime must be an object"]
     valid_kv = set(gguf.KV_BYTES_PER_ELEMENT)
+    valid_spec = {"none", "draft-simple", "draft-mtp", "draft-eagle3"}
     clean = {}
     errors = []
     for key, value in runtime.items():
@@ -132,6 +133,38 @@ def _validate_runtime(runtime):
                 errors.append("flash_attn must be on, off, or auto")
                 continue
             clean[key] = value
+        elif key == "spec_type":
+            if not isinstance(value, str) or value not in valid_spec:
+                errors.append("spec_type must be one of %s"
+                              % ", ".join(sorted(valid_spec)))
+                continue
+            clean[key] = value
+        elif key == "draft_model":
+            if not isinstance(value, str):
+                errors.append("draft_model must be a string")
+                continue
+            clean[key] = value
+        elif key == "reasoning":
+            if value not in ("on", "off", "auto"):
+                errors.append("reasoning must be on, off, or auto")
+                continue
+            clean[key] = value
+        elif key == "devices":
+            if isinstance(value, (list, tuple)):
+                if not all(isinstance(item, str) for item in value):
+                    errors.append("devices must be a string or list of strings")
+                    continue
+                clean[key] = ",".join(value)
+            elif isinstance(value, str):
+                clean[key] = value
+            else:
+                errors.append("devices must be a string or list of strings")
+                continue
+        elif key in ("top_k", "n_predict", "reasoning_budget"):
+            if isinstance(value, bool) or type(value) is not int or value < -1:
+                errors.append("%s must be an integer >= -1" % key)
+                continue
+            clean[key] = value
         elif key == "cache_reuse":
             # 0 means "disabled"; negative or non-int values are rejected.
             if isinstance(value, bool) or type(value) is not int or value < 0:
@@ -143,7 +176,8 @@ def _validate_runtime(runtime):
                 errors.append("%s must be a positive integer" % key)
                 continue
             clean[key] = value
-        elif key in ("cache_prompt", "fit", "kv_unified", "no_kv_offload"):
+        elif key in ("cache_prompt", "fit", "kv_unified", "no_kv_offload",
+                     "cmoe"):
             if type(value) is not bool:
                 errors.append("%s must be a boolean" % key)
                 continue

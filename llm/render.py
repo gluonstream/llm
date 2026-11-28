@@ -111,6 +111,14 @@ def runtime_summary(runtime):
     else:
         parts.append("no-fit")
     parts.append("cache-reuse %s" % runtime.get("cache_reuse", 0))
+    spec_type = runtime.get("spec_type")
+    if spec_type not in (None, "", "none"):
+        parts.append("spec %s" % spec_type)
+    if runtime.get("cmoe"):
+        parts.append("cmoe")
+    reasoning = runtime.get("reasoning")
+    if reasoning in ("on", "off"):
+        parts.append("reasoning %s" % reasoning)
     return " \u00b7 ".join(parts)
 
 

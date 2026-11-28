@@ -62,6 +62,33 @@ class RuntimePolicyTest(unittest.TestCase):
         self.assertFalse(policy["fit"])
         self.assertFalse(policy["cache_reuse"])
 
+    def test_generation_and_speculative_defaults(self):
+        policy = runtime.policy_runtime("balanced")
+        self.assertEqual(policy["spec_type"], "none")
+        self.assertEqual(policy["draft_model"], "")
+        self.assertFalse(policy["cmoe"])
+        self.assertEqual(policy["reasoning"], "auto")
+        self.assertEqual(policy["reasoning_budget"], -1)
+        self.assertEqual(policy["devices"], "")
+        self.assertEqual(policy["top_k"], 40)
+        self.assertEqual(policy["n_predict"], -1)
+
+    def test_generation_and_speculative_overrides(self):
+        choice = runtime.choose_runtime(
+            12 * hardware.GIB, 8192, machine(40 * hardware.GIB),
+            model_metadata(), policy="balanced",
+            spec_type="draft-mtp", draft_model="/tmp/draft.gguf", cmoe=True,
+            reasoning="off", reasoning_budget=1024, devices="0,1",
+            top_k=80, n_predict=512)
+        self.assertEqual(choice.runtime["spec_type"], "draft-mtp")
+        self.assertEqual(choice.runtime["draft_model"], "/tmp/draft.gguf")
+        self.assertTrue(choice.runtime["cmoe"])
+        self.assertEqual(choice.runtime["reasoning"], "off")
+        self.assertEqual(choice.runtime["reasoning_budget"], 1024)
+        self.assertEqual(choice.runtime["devices"], "0,1")
+        self.assertEqual(choice.runtime["top_k"], 80)
+        self.assertEqual(choice.runtime["n_predict"], 512)
+
     def test_choose_runtime_uses_typed_kv(self):
         metadata = model_metadata()  # f16 KV == 1 GiB at 8192 context
         # Balanced (q8_0) fits 128K on 40 GiB; conservative (f16) would only

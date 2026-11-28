@@ -199,10 +199,33 @@ def server_args(profile, llama_server=None, supported=None):
         args += ["--fit", "on", "--fit-target", str(rt.get("fit_target", 2048))]
     if rt.get("no_kv_offload") and "--no-kv-offload" in supported:
         args += ["--no-kv-offload"]
+    if rt.get("draft_model") and "-md" in supported:
+        args += ["-md", rt["draft_model"]]
+    if rt.get("spec_type") not in (None, "", "none") and "--spec-type" in supported:
+        args += ["--spec-type", rt["spec_type"]]
+    if rt.get("cmoe") and "-cmoe" in supported:
+        args += ["-cmoe"]
+    reasoning = rt.get("reasoning", "auto")
+    is_qwen = profile["id"] == "qwen2.5-7b-instruct-q4-k-m"
+    if reasoning == "auto" and is_qwen:
+        # The qwen built-in must stay out of reasoning mode unless the user
+        # explicitly opts in; "auto"/unset keeps it off.
+        reasoning = "off"
+    if "-rea" in supported and (reasoning != "auto" or not is_qwen):
+        args += ["-rea", reasoning]
+    if rt.get("reasoning_budget", -1) >= 0 and "--reasoning-budget" in supported:
+        args += ["--reasoning-budget", str(rt["reasoning_budget"])]
+    devices = rt.get("devices") or ""
+    if isinstance(devices, (list, tuple)):
+        devices = ",".join(str(device) for device in devices)
+    if devices and "-dev" in supported:
+        args += ["-dev", devices]
+    if rt.get("top_k", -1) >= 0 and "--top-k" in supported:
+        args += ["--top-k", str(rt["top_k"])]
+    if rt.get("n_predict", -1) > 0 and "-n" in supported:
+        args += ["-n", str(rt["n_predict"])]
     args += ["--host", "127.0.0.1", "--port", str(PORT),
              "--alias", profile["alias"], "--jinja", "--no-webui"]
-    if profile["id"] == "qwen2.5-7b-instruct-q4-k-m":
-        args += ["--reasoning", "off"]
     sampling = profile["sampling"]
     args += ["--temp", str(sampling["temperature"]), "--top-p", str(sampling["top_p"]),
              "--min-p", str(sampling["min_p"]),

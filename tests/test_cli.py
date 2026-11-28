@@ -740,6 +740,25 @@ class DoctorCliTest(unittest.TestCase):
         self.assertIn("cache-reuse 256", text)
         self.assertIn("peak 4K", text)
 
+    def test_doctor_runtime_summary_includes_spec_and_cmoe(self):
+        selected = {
+            "id": "qwen", "alias": "qwen", "context": 131072,
+            "path": "/nonexistent/qwen.gguf", "sampling": {},
+            "runtime": {
+                "kv_type_k": "q8_0", "kv_type_v": "q8_0", "flash_attn": "on",
+                "batch": 2048, "ubatch": 512, "parallel": 1,
+                "cache_prompt": True, "cache_reuse": 256, "fit": True,
+                "fit_target": 2048, "kv_unified": True, "no_kv_offload": False,
+                "spec_type": "draft-simple", "draft_model": "/tmp/draft.gguf",
+                "cmoe": True, "reasoning": "off",
+            },
+        }
+        with mock.patch.object(cli.usage, "peak_tokens", return_value=None):
+            text = self._doctor(selected=selected)
+        self.assertIn("spec draft-simple", text)
+        self.assertIn("cmoe", text)
+        self.assertIn("reasoning off", text)
+
 
 class ContextCliTest(unittest.TestCase):
     GIB = 1024 ** 3
@@ -1239,6 +1258,68 @@ class ApplyCliTest(unittest.TestCase):
         tuned = data["overrides"]["m"]["runtime"]
         self.assertFalse(tuned["fit"])
         self.assertEqual(tuned["cache_reuse"], 0)
+
+    def test_apply_draft_resolves_to_path(self):
+        machine = self._machine()
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}, "repo": "o/r",
+                  "filename": "m.gguf", "revision": "main"},
+            "draft": {"id": "draft", "alias": "draft",
+                      "path": "/x/draft.gguf", "context": 8192,
+                      "sampling": {}, "repo": "o/r2",
+                      "filename": "draft.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--draft", "draft"], profiles,
+            {"m": 4 * self.GIB, "draft": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        runtime_block = data["overrides"]["m"]["runtime"]
+        # A draft without --spec-type defaults to draft-simple and stores path.
+        self.assertEqual(runtime_block["draft_model"], "/x/draft.gguf")
+        self.assertEqual(runtime_block["spec_type"], "draft-simple")
+
+    def test_apply_draft_explicit_spec_type_wins(self):
+        machine = self._machine()
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}, "repo": "o/r",
+                  "filename": "m.gguf", "revision": "main"},
+            "draft": {"id": "draft", "alias": "draft",
+                      "path": "/x/draft.gguf", "context": 8192,
+                      "sampling": {}, "repo": "o/r2",
+                      "filename": "draft.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--draft", "draft", "--spec-type", "draft-mtp"], profiles,
+            {"m": 4 * self.GIB, "draft": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        runtime_block = data["overrides"]["m"]["runtime"]
+        self.assertEqual(runtime_block["draft_model"], "/x/draft.gguf")
+        self.assertEqual(runtime_block["spec_type"], "draft-mtp")
+
+    def test_apply_cmoe_reasoning_device_flags(self):
+        machine = self._machine()
+        profiles = {
+            "m": {"id": "m", "alias": "m", "path": "/x/m.gguf",
+                  "context": 8192, "sampling": {}, "repo": "o/r",
+                  "filename": "m.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--cmoe", "--reasoning", "on", "--reasoning-budget",
+             "1024", "--device", "0,1", "--top-k", "80", "--predict", "512"],
+            profiles, {"m": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        runtime_block = data["overrides"]["m"]["runtime"]
+        self.assertTrue(runtime_block["cmoe"])
+        self.assertEqual(runtime_block["reasoning"], "on")
+        self.assertEqual(runtime_block["reasoning_budget"], 1024)
+        self.assertEqual(runtime_block["devices"], "0,1")
+        self.assertEqual(runtime_block["top_k"], 80)
+        self.assertEqual(runtime_block["n_predict"], 512)
 
 
 class AnalyzeCliTest(unittest.TestCase):

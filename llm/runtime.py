@@ -14,6 +14,14 @@ _COMMON = {
     "fit_target": 2048,
     "kv_unified": True,
     "no_kv_offload": False,
+    "spec_type": "none",
+    "draft_model": "",
+    "cmoe": False,
+    "reasoning": "auto",
+    "reasoning_budget": -1,
+    "devices": "",
+    "top_k": 40,
+    "n_predict": -1,
 }
 
 
@@ -41,7 +49,8 @@ DEFAULT_POLICY = "balanced"
 _RUNTIME_KEYS = (
     "kv_type_k", "kv_type_v", "flash_attn", "batch", "ubatch", "parallel",
     "cache_prompt", "cache_reuse", "fit", "fit_target", "kv_unified",
-    "no_kv_offload",
+    "no_kv_offload", "spec_type", "draft_model", "cmoe", "reasoning",
+    "reasoning_budget", "devices", "top_k", "n_predict",
 )
 
 
@@ -92,7 +101,9 @@ def choose_runtime(model_size, current_context, machine, metadata=None,
                    policy="balanced", observed=None, kv=None, kv_k=None,
                    kv_v=None, batch=None, ubatch=None,
                    fit_target=None, no_fit=False, no_cache_reuse=False,
-                   ceiling=None):
+                   ceiling=None, spec_type=None, draft_model=None,
+                   cmoe=None, reasoning=None, reasoning_budget=None,
+                   devices=None, top_k=None, n_predict=None):
     """Pick a context and runtime together, returning a TunedChoice."""
     overrides = {}
     if kv is not None:
@@ -111,6 +122,24 @@ def choose_runtime(model_size, current_context, machine, metadata=None,
         overrides["no_fit"] = True
     if no_cache_reuse:
         overrides["no_cache_reuse"] = True
+    if spec_type is not None:
+        overrides["spec_type"] = spec_type
+    if draft_model is not None:
+        overrides["draft_model"] = draft_model
+    if cmoe is not None:
+        overrides["cmoe"] = cmoe
+    if reasoning is not None:
+        overrides["reasoning"] = reasoning
+    if reasoning_budget is not None:
+        overrides["reasoning_budget"] = reasoning_budget
+    if devices is not None:
+        if isinstance(devices, (list, tuple)):
+            devices = ",".join(str(device) for device in devices)
+        overrides["devices"] = devices
+    if top_k is not None:
+        overrides["top_k"] = top_k
+    if n_predict is not None:
+        overrides["n_predict"] = n_predict
 
     runtime = policy_runtime(policy, overrides)
     candidates = candidates_for(policy, observed)

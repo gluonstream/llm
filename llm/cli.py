@@ -199,6 +199,13 @@ def cmd_apply(args):
 
     machine = hardware.detect_hardware(models_dir=hfcache.cache_root())
 
+    draft_model = None
+    if args.draft:
+        draft_model = config.resolve_model(args.draft).get("path")
+    spec_type = args.spec_type
+    if spec_type is None and draft_model:
+        spec_type = "draft-simple"
+
     rows = []
     chosen = {}
     changed_ids = []
@@ -224,7 +231,12 @@ def cmd_apply(args):
             kv_k=args.kv_k, kv_v=args.kv_v, batch=args.batch,
             ubatch=args.ubatch, fit_target=args.fit_target,
             no_fit=args.no_fit, no_cache_reuse=args.no_cache_reuse,
-            ceiling=args.context)
+            ceiling=args.context, spec_type=spec_type,
+            draft_model=draft_model, cmoe=args.cmoe,
+            reasoning=args.reasoning,
+            reasoning_budget=args.reasoning_budget,
+            devices=args.devices, top_k=args.top_k,
+            n_predict=args.n_predict)
         new = tuned.context
         new_runtime = tuned.runtime
         kv_k = new_runtime["kv_type_k"]
@@ -801,6 +813,18 @@ def build_parser(prog=None):
     command.add_argument("--fit-target", type=int)
     command.add_argument("--no-fit", action="store_true")
     command.add_argument("--no-cache-reuse", action="store_true")
+    command.add_argument("--spec-type",
+                         choices=("none", "draft-simple", "draft-mtp",
+                                  "draft-eagle3"),
+                         default=None)
+    command.add_argument("--draft", metavar="MODEL")
+    command.add_argument("--cmoe", action="store_true")
+    command.add_argument("--reasoning", choices=("on", "off", "auto"),
+                         default="auto")
+    command.add_argument("--reasoning-budget", type=int)
+    command.add_argument("--device", dest="devices")
+    command.add_argument("--top-k", type=int, default=40)
+    command.add_argument("--predict", dest="n_predict", type=int)
     command = add("use", cmd_use, "select a model; restart the service if it is running")
     command.add_argument("model")
     command = add("start", cmd_start, "start the selected model")
