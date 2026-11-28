@@ -719,3 +719,125 @@ class DoctorCliTest(unittest.TestCase):
         self.assertIn("built-in", text)
         self.assertIn("cache", text)
         self.assertIn("user", text)
+
+
+class ContextCliTest(unittest.TestCase):
+    GIB = 1024 ** 3
+
+    def _machine(self, **kwargs):
+        values = {
+            "chip": "Apple M1", "model": "arm64",
+            "total_ram": 16 * self.GIB, "unified": True, "gpu": "unknown",
+            "vram": None, "disk_free": 100 * self.GIB,
+            "available_ram": 8 * self.GIB, "gpus": [],
+        }
+        values.update(kwargs)
+        return hardware.Hardware(**values)
+
+    def _run(self, argv):
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.object(config, "migrate_state", return_value=False), \
+             redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_context_lists_models(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)):
+                code, out, _ = self._run(["context"])
+        self.assertEqual(code, 0)
+        for alias in ("qwen2.5-7b-instruct-graphify", "glm-4.7-flash",
+                      "inkling-2-mini"):
+            self.assertIn(alias, out)
+        self.assertIn("32K", out)
+        self.assertIn("8K", out)
+
+    def test_context_shows_model_value_and_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)):
+                code, out, _ = self._run(["context", "qwen2.5-7b-instruct"])
+        self.assertEqual(code, 0)
+        self.assertIn("qwen2.5-7b-instruct-graphify", out)
+        self.assertIn("8K", out)
+        self.assertIn("built-in", out)
+
+    def test_context_sets_builtin_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)):
+                code, _, _ = self._run(
+                    ["context", "qwen2.5-7b-instruct", "65536"])
+            self.assertEqual(code, 0)
+            data = json.loads(models.read_text())
+        self.assertEqual(data["overrides"][config.DEFAULT]["context"], 65536)
+
+    def test_context_auto_writes_choice(self):
+        machine = self._machine(total_ram=128 * self.GIB,
+                                available_ram=128 * self.GIB)
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)), \
+                 mock.patch.object(cli, "_local_size",
+                                   return_value=4 * self.GIB), \
+                 mock.patch.object(cli.gguf, "read_metadata", return_value=None), \
+                 mock.patch.object(cli.hardware, "detect_hardware",
+                                   return_value=machine):
+                code, _, _ = self._run(
+                    ["context", "qwen2.5-7b-instruct", "auto"])
+            self.assertEqual(code, 0)
+            data = json.loads(models.read_text())
+        self.assertEqual(data["overrides"][config.DEFAULT]["context"], 131072)
+
+    def test_context_auto_dry_run_does_not_write(self):
+        machine = self._machine(total_ram=128 * self.GIB,
+                                available_ram=128 * self.GIB)
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)), \
+                 mock.patch.object(cli, "_local_size",
+                                   return_value=4 * self.GIB), \
+                 mock.patch.object(cli.gguf, "read_metadata", return_value=None), \
+                 mock.patch.object(cli.hardware, "detect_hardware",
+                                   return_value=machine):
+                code, _, _ = self._run(
+                    ["context", "qwen2.5-7b-instruct", "auto", "--dry-run"])
+            self.assertEqual(code, 0)
+            self.assertFalse(models.exists())
+
+    def test_context_warns_when_explicit_does_not_fit(self):
+        machine = self._machine(total_ram=8 * self.GIB,
+                                available_ram=8 * self.GIB)
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)), \
+                 mock.patch.object(cli, "_local_size",
+                                   return_value=4 * self.GIB), \
+                 mock.patch.object(cli.gguf, "read_metadata", return_value=None), \
+                 mock.patch.object(cli.hardware, "detect_hardware",
+                                   return_value=machine):
+                code, _, err = self._run(
+                    ["context", "qwen2.5-7b-instruct", "131072"])
+            self.assertEqual(code, 0)
+            data = json.loads(models.read_text())
+        self.assertIn("warning", err.lower())
+        self.assertEqual(data["overrides"][config.DEFAULT]["context"], 131072)
+
+    def test_context_rejects_non_positive_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models.json"
+            with mock.patch.object(config, "USER_MODELS", models), \
+                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)):
+                code, _, err = self._run(
+                    ["context", "qwen2.5-7b-instruct", "0"])
+            self.assertEqual(code, 1)
+            self.assertFalse(models.exists())
+            self.assertIn("positive integer", err)

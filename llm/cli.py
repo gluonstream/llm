@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import (config, diagnose, hardware, hfcache, host, hub, migrate,
+from . import (config, diagnose, gguf, hardware, hfcache, host, hub, migrate,
                opencode, pi, render, service, update)
 
 _subparsers = {}
@@ -79,6 +79,77 @@ def cmd_status(args):
         if failure:
             print()
             print("Last failure: " + failure)
+    return 0
+
+
+def cmd_context(args):
+    if args.model is None:
+        print("%-*s %*s  %s" % (render.NAME_WIDTH, "MODEL",
+                                render.CONTEXT_WIDTH, "CONTEXT", "SOURCE"))
+        for profile_id, profile in config.PROFILES.items():
+            name = profile.get("alias") or profile_id
+            print("%-*s %*s  %s" % (
+                render.NAME_WIDTH, name, render.CONTEXT_WIDTH,
+                render.short_context(profile.get("context")),
+                config.context_source(profile_id)))
+        return 0
+
+    profile = config.resolve_model(args.model)
+    profile_id = profile["id"]
+    alias = profile.get("alias") or profile_id
+    context = profile.get("context")
+
+    if args.tokens is None:
+        print("%s: %s (%s)" % (alias, render.short_context(context),
+                               config.context_source(profile_id)))
+        return 0
+
+    if args.tokens == "auto":
+        size = _local_size(profile)
+        if size is None:
+            raise config.ModelError(
+                "cannot auto-size %s: model file not found" % alias)
+        metadata = (gguf.read_metadata(profile["path"])
+                    if profile.get("path") else None)
+        machine = hardware.detect_hardware(models_dir=MODELS_DIR)
+        choice = hardware.choose_context(size, context, machine, metadata)
+        print("%s: %s (%s)" % (alias, render.short_context(choice.context),
+                               choice.reason))
+        if args.dry_run:
+            print("dry run: no change written")
+        else:
+            config.set_context(profile_id, choice.context)
+            config.reload_profiles()
+        return 0
+
+    try:
+        value = int(args.tokens)
+    except ValueError:
+        raise config.ModelError("context must be a positive integer, got %r"
+                                % (args.tokens,))
+    if value <= 0:
+        raise config.ModelError("context must be a positive integer, got %r"
+                                % (value,))
+
+    size = _local_size(profile)
+    if size is not None:
+        metadata = (gguf.read_metadata(profile["path"])
+                    if profile.get("path") else None)
+        machine = hardware.detect_hardware(models_dir=MODELS_DIR)
+        required = hardware.estimate_required(size, value, metadata)
+        budget = hardware.context_budget(machine)
+        if budget is not None and required > budget:
+            print("warning: %s at %s context does not fit: needs ~%s, "
+                  "budget ~%s" % (alias, render.short_context(value),
+                                  render.human_size(required),
+                                  render.human_size(budget)),
+                  file=sys.stderr)
+    if args.dry_run:
+        print("%s: %s (dry run)" % (alias, render.short_context(value)))
+    else:
+        config.set_context(profile_id, value)
+        config.reload_profiles()
+        print("%s: %s" % (alias, render.short_context(value)))
     return 0
 
 
@@ -555,6 +626,10 @@ def build_parser(prog=None):
 
     add("list", cmd_list, "show models and which one is running")
     add("status", cmd_status, "show selected model, service health and endpoint")
+    command = add("context", cmd_context, "show or set a model's context window")
+    command.add_argument("model", nargs="?")
+    command.add_argument("tokens", nargs="?")
+    command.add_argument("--dry-run", action="store_true")
     command = add("use", cmd_use, "select a model; restart the service if it is running")
     command.add_argument("model")
     command = add("start", cmd_start, "start the selected model")
