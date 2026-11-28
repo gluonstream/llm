@@ -1,12 +1,13 @@
 """Command line interface for llm (lmm)."""
 import argparse
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
 
-from . import (config, diagnose, hardware, hfcache, host, hub, migrate, render,
-               service, update)
+from . import (config, diagnose, hardware, hfcache, host, hub, migrate,
+               opencode, pi, render, service, update)
 
 _subparsers = {}
 # Legacy download location. `get` writes the Hugging Face cache instead, but
@@ -360,6 +361,35 @@ def cmd_migrate_cache(args):
     return 0
 
 
+def _short_context(value):
+    return "missing" if value is None else render.short_context(value)
+
+
+def _gpu_line(gpu):
+    parts = [gpu.name]
+    if gpu.total is not None:
+        parts.append(render.human_size(gpu.total))
+    if gpu.used is not None:
+        parts.append("%s used" % render.human_size(gpu.used))
+    if gpu.free is not None:
+        parts.append("%s free" % render.human_size(gpu.free))
+    if gpu.utilization is not None:
+        parts.append("%g%% util" % gpu.utilization)
+    if gpu.unified:
+        parts.append("unified")
+    return " \u00b7 ".join(parts)
+
+
+def _model_source(profile_id, profile, registry):
+    if profile_id in config.BUILTIN_PROFILES:
+        return "built-in"
+    if profile_id in registry.models:
+        return "user"
+    if profile.get("source") == "cache":
+        return "cache"
+    return "unknown"
+
+
 def cmd_doctor(args):
     version = diagnose.llama_server_version(config.LLAMA_SERVER)
     print("llama-server: %s" % (version["raw"] or "not found at " + config.LLAMA_SERVER))
@@ -375,14 +405,25 @@ def cmd_doctor(args):
     if budget:
         details += ", usable ~%s" % render.human_size(budget)
     print("Hardware:     " + details)
+    for gpu in machine.gpus:
+        print("GPU:          " + _gpu_line(gpu))
+    if (host.IS_LINUX and any("NVIDIA" in (gpu.name or "") for gpu in machine.gpus)
+            and shutil.which("gpustat") is None):
+        if shutil.which("pacman"):
+            print("install gpustat for precise VRAM stats: "
+                  "sudo pacman -S python-pipx && pipx ensurepath && pipx install gpustat")
+        else:
+            print("install gpustat for precise VRAM stats: pipx install gpustat")
     if not os.access(config.LSOF, os.X_OK):
         print("warning: lsof not found; port ownership checks are limited")
     if machine.disk_free is not None:
         print("Disk free:    %s" % render.human_size(machine.disk_free))
+    print("Cache:        %s" % hfcache.cache_root())
 
     print()
     print("Models:")
-    installed = version["version"]
+    server_version = version["version"]
+    registry = config.load_registry()
     for profile_id, profile in config.PROFILES.items():
         size = _local_size(profile)
         name = profile.get("alias") or profile_id
@@ -390,21 +431,51 @@ def cmd_doctor(args):
         note = ""
         required = profile.get("min_llama_cpp")
         if required:
-            met = installed is not None and diagnose.version_at_least(installed, required)
+            met = server_version is not None and diagnose.version_at_least(
+                server_version, required)
             note = " \u00b7 needs llama.cpp >= %s%s" % (
                 required, "" if met else " (NOT MET)")
-        print("  %-30s %10s%s" % (name, state, note))
+        source = _model_source(profile_id, profile, registry)
+        print("  %-30s %10s %6s  %-8s%s" % (
+            name, state, render.short_context(profile.get("context")),
+            source, note))
 
     print()
     pid = service.running()
+    ready = service.healthy() if pid else False
     if pid:
         print("Service:      RUNNING \u00b7 PID %s \u00b7 %s"
-              % (pid, "ready" if service.healthy() else "loading"))
+              % (pid, "ready" if ready else "loading"))
     else:
         print("Service:      stopped")
     listener = service.listener_pid() if not pid else None
     if listener:
         print("warning: port %d is held by an unmanaged PID %s" % (config.PORT, listener))
+    if pid and ready:
+        selected = config.selected_profile()
+        actual = service.server_context()
+        if actual and actual != selected["context"]:
+            print("warning: configured %s, server %s \u2192 run llm restart"
+                  % (render.short_context(selected["context"]),
+                     render.short_context(actual)))
+
+    installed = {profile_id: profile for profile_id, profile in config.PROFILES.items()
+                 if _local_size(profile)}
+    for alias, actual, expected in opencode.mismatches(installed):
+        print("warning: opencode.json says %s, llm says %s for %s "
+              "\u2192 run llm apply --sync-opencode"
+              % (_short_context(actual), _short_context(expected), alias))
+    for alias in opencode.unknown_entries(installed):
+        print("note: opencode.json lists %s, which llm does not know" % alias)
+    for alias, actual, expected in pi.mismatches(installed):
+        print("warning: pi models.json says %s, llm says %s for %s "
+              "\u2192 run llm apply --sync-pi"
+              % (_short_context(actual), _short_context(expected), alias))
+    for alias in pi.unknown_entries(installed):
+        print("note: pi models.json lists %s, which llm does not know" % alias)
+
+    for model_id, reason in registry.invalid:
+        print("warning: override for %s ignored (%s)" % (model_id, reason))
 
     try:
         config.STATE.mkdir(parents=True, exist_ok=True, mode=0o700)

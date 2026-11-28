@@ -590,3 +590,132 @@ class VersionCliTest(unittest.TestCase):
             "llm 1.1.1",
             "last version is 1.2.0. run `llm update` to update.",
         ])
+
+
+class DoctorCliTest(unittest.TestCase):
+    GIB = 1024 ** 3
+
+    def _machine(self, gpus=(), **kwargs):
+        values = {
+            "chip": "Apple M1", "model": "arm64",
+            "total_ram": 16 * self.GIB, "unified": True, "gpu": "unknown",
+            "vram": None, "disk_free": 100 * self.GIB,
+            "available_ram": 8 * self.GIB,
+        }
+        values.update(kwargs)
+        values["gpus"] = list(gpus)
+        return hardware.Hardware(**values)
+
+    def _doctor(self, machine=None, profiles=None, registry=None, pid=None,
+                healthy=False, server_context=None, selected=None,
+                opencode_mismatches=(), opencode_unknown=(),
+                pi_mismatches=(), pi_unknown=(), linux=False, which=None):
+        if machine is None:
+            machine = self._machine()
+        if registry is None:
+            registry = config.Registry({}, {}, False, [])
+        buffer = io.StringIO()
+        patches = [
+            mock.patch.object(config, "migrate_state", return_value=False),
+            mock.patch.object(cli.diagnose, "llama_server_version",
+                              return_value={"raw": "", "version": None,
+                                            "build": None}),
+            mock.patch.object(cli.diagnose, "llama_cpp_package_status",
+                              return_value=None),
+            mock.patch.object(cli.hardware, "detect_hardware",
+                              return_value=machine),
+            mock.patch.object(service, "running", return_value=pid),
+            mock.patch.object(service, "healthy", return_value=healthy),
+            mock.patch.object(service, "server_context",
+                              return_value=server_context),
+            mock.patch.object(service, "listener_pid", return_value=None),
+            mock.patch.object(service, "last_failure", return_value=None),
+            mock.patch.object(cli.opencode, "mismatches",
+                              return_value=list(opencode_mismatches)),
+            mock.patch.object(cli.opencode, "unknown_entries",
+                              return_value=list(opencode_unknown)),
+            mock.patch.object(cli.pi, "mismatches",
+                              return_value=list(pi_mismatches)),
+            mock.patch.object(cli.pi, "unknown_entries",
+                              return_value=list(pi_unknown)),
+            mock.patch.object(config, "load_registry", return_value=registry),
+            mock.patch.object(config, "selected_profile",
+                              return_value=selected),
+            redirect_stdout(buffer),
+        ]
+        if profiles is not None:
+            patches.append(mock.patch.object(config, "PROFILES", profiles))
+        if linux:
+            patches.append(mock.patch.object(cli.host, "IS_LINUX", True))
+            patches.append(mock.patch.object(cli.shutil, "which",
+                                             return_value=which))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            self.assertEqual(cli.main(["doctor"]), 0)
+        return buffer.getvalue()
+
+    def test_doctor_shows_context_and_gpu(self):
+        gpu = hardware.GpuStats(
+            name="NVIDIA RTX 4090", total=24 * self.GIB, used=3 * self.GIB,
+            free=21 * self.GIB, utilization=35, source="gpustat")
+        profiles = {"qwen": {"id": "qwen", "alias": "qwen",
+                             "path": "/nonexistent/qwen.gguf",
+                             "context": 65536, "sampling": {}}}
+        text = self._doctor(machine=self._machine(gpus=[gpu]),
+                            profiles=profiles)
+        self.assertIn("64K", text)
+        self.assertIn("35% util", text)
+        self.assertIn("used", text)
+
+    def test_doctor_warns_when_gpustat_missing(self):
+        gpu = hardware.GpuStats(name="NVIDIA GeForce RTX 3090",
+                                source="lspci")
+        text = self._doctor(machine=self._machine(gpus=[gpu]),
+                            linux=True, which=None)
+        self.assertIn("pipx install gpustat", text)
+
+    def test_doctor_warns_server_context_mismatch(self):
+        selected = {"id": "qwen", "context": 65536}
+        text = self._doctor(pid=42, healthy=True, server_context=8192,
+                            selected=selected)
+        self.assertIn("configured 64K", text)
+        self.assertIn("server 8K", text)
+
+    def test_doctor_warns_opencode_mismatch(self):
+        text = self._doctor(opencode_mismatches=[("qwen", 65536, 8192)])
+        self.assertIn("opencode.json", text)
+        self.assertIn("--sync-opencode", text)
+
+    def test_doctor_warns_pi_mismatch(self):
+        text = self._doctor(pi_mismatches=[("qwen", 65536, 8192)])
+        self.assertIn("pi models.json", text)
+        self.assertIn("--sync-pi", text)
+
+    def test_doctor_shows_invalid_override_warning(self):
+        registry = config.Registry({}, {}, False, [("x", "invalid context")])
+        text = self._doctor(registry=registry)
+        self.assertIn("warning: override for x ignored", text)
+
+    def test_doctor_shows_cache_root_and_source(self):
+        profiles = {
+            "qwen2.5-7b-instruct-q4-k-m": {
+                "id": "qwen2.5-7b-instruct-q4-k-m", "alias": "alpha",
+                "path": "/nonexistent/a.gguf", "context": 8192,
+                "sampling": {}},
+            "user-model": {
+                "id": "user-model", "alias": "beta",
+                "path": "/nonexistent/b.gguf", "context": 8192,
+                "sampling": {}},
+            "cache-model": {
+                "id": "cache-model", "alias": "gamma", "source": "cache",
+                "path": "/nonexistent/c.gguf", "context": 8192,
+                "sampling": {}},
+        }
+        registry = config.Registry({"user-model": profiles["user-model"]},
+                                   {}, False, [])
+        text = self._doctor(profiles=profiles, registry=registry)
+        self.assertIn("Cache:", text)
+        self.assertIn("built-in", text)
+        self.assertIn("cache", text)
+        self.assertIn("user", text)
