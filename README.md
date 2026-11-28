@@ -248,6 +248,31 @@ and lists them alongside the built-in profiles. A model is only picked up when
 all shards of a split set are present. Set `LMM_NO_CACHE=1` to skip discovery
 (for tests or a deliberately restricted view).
 
+#### Cache locations
+
+| Tool | macOS | Arch Linux | Windows |
+| --- | --- | --- | --- |
+| Hugging Face (`llm`, Unsloth, HF tools) | `~/.cache/huggingface/hub/` | `~/.cache/huggingface/hub/` | `%USERPROFILE%\.cache\huggingface\hub\` (e.g. `C:\Users\<username>\.cache\huggingface\hub\`) |
+| llama.cpp `-hf` downloader | `~/Library/Caches/llama.cpp/` | `~/.cache/llama.cpp/` | `%LOCALAPPDATA%\llama.cpp\` |
+
+`llm` follows the standard Hugging Face location,
+`~/.cache/huggingface/hub/`, and reads/writes that layout. To share the same
+model files with Unsloth Desktop/Studio or other Hugging Face tools, set
+`HF_HOME` or `HF_HUB_CACHE` **before** launching them and `llm`. `llm` also
+honours `HUGGINGFACE_HUB_CACHE`; the full precedence is listed above.
+
+llama.cpp's own `-hf` downloader uses a separate cache controlled by
+`LLAMA_CACHE` (macOS `~/Library/Caches/llama.cpp/`, Linux
+`~/.cache/llama.cpp/`, Windows `%LOCALAPPDATA%\llama.cpp\`). `llm` passes
+explicit model paths and does not use that cache; set `LLAMA_CACHE` only when
+you use `llama.cpp -hf` directly.
+
+#### Supported platforms
+
+`llm` supports macOS on Apple Silicon and Arch Linux. Other Linux distributions
+are not currently planned, and Microsoft Windows is not supported at this time.
+The Windows cache paths above are shown for reference only.
+
 ### Migrating legacy downloads
 
 Older versions of `llm` (and `graphify`) stored models under
