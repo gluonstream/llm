@@ -6,8 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import (analysis, config, diagnose, gguf, hardware, hfcache, host, hub,
-               migrate, opencode, pi, render, runtime, service, update, usage)
+from . import (analysis, codex, config, diagnose, gguf, hardware, hfcache, host,
+               hub, migrate, opencode, pi, render, runtime, service, update,
+               usage)
 
 _subparsers = {}
 # Legacy download location. `get` writes the Hugging Face cache instead, but
@@ -176,6 +177,17 @@ def _sync_summary(result):
     return ", ".join(parts) if parts else "no changes"
 
 
+def _selected_alias():
+    """Return the selected profile's alias, or None when it cannot resolve."""
+    try:
+        selected = config.selected_profile()
+    except (config.ModelError, AttributeError):
+        return None
+    if not selected:
+        return None
+    return selected.get("alias") or selected["id"]
+
+
 def _sync_clients(args, installed, dry_run=False):
     if args.sync_opencode or args.sync_clients:
         result = opencode.sync(installed, dry_run=dry_run)
@@ -183,6 +195,11 @@ def _sync_clients(args, installed, dry_run=False):
     if args.sync_pi or args.sync_clients:
         result = pi.sync(installed, dry_run=dry_run)
         print("pi: " + _sync_summary(result))
+    if args.sync_codex or args.sync_clients:
+        selected_alias = _selected_alias()
+        if selected_alias:
+            result = codex.sync(installed, selected_alias, dry_run=dry_run)
+            print("codex: " + _sync_summary(result))
 
 
 def cmd_apply(args):
@@ -705,6 +722,13 @@ def cmd_doctor(args):
     for alias in pi.unknown_entries(installed):
         print("note: pi models.json lists %s, which llm does not know" % alias)
 
+    selected_alias = _selected_alias()
+    if selected_alias:
+        for field, actual, expected in codex.mismatches(selected_alias):
+            print("warning: codex config.toml %s is %r, expected %r "
+                  "\u2192 run llm apply --sync-codex"
+                  % (field, actual, expected))
+
     for model_id, reason in registry.invalid:
         print("warning: override for %s ignored (%s)" % (model_id, reason))
 
@@ -800,6 +824,7 @@ def build_parser(prog=None):
     command.add_argument("--no-restart", action="store_true")
     command.add_argument("--sync-opencode", action="store_true")
     command.add_argument("--sync-pi", action="store_true")
+    command.add_argument("--sync-codex", action="store_true")
     command.add_argument("--sync-clients", action="store_true")
     command.add_argument("--runtime-policy", "--policy", dest="runtime_policy",
                          choices=("conservative", "balanced", "extended",

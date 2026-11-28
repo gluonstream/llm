@@ -609,7 +609,8 @@ class DoctorCliTest(unittest.TestCase):
     def _doctor(self, machine=None, profiles=None, registry=None, pid=None,
                 healthy=False, server_context=None, selected=None,
                 opencode_mismatches=(), opencode_unknown=(),
-                pi_mismatches=(), pi_unknown=(), linux=False, which=None):
+                pi_mismatches=(), pi_unknown=(), codex_mismatches=(),
+                linux=False, which=None):
         if machine is None:
             machine = self._machine()
         if registry is None:
@@ -638,6 +639,8 @@ class DoctorCliTest(unittest.TestCase):
                               return_value=list(pi_mismatches)),
             mock.patch.object(cli.pi, "unknown_entries",
                               return_value=list(pi_unknown)),
+            mock.patch.object(cli.codex, "mismatches",
+                              return_value=list(codex_mismatches)),
             mock.patch.object(config, "load_registry", return_value=registry),
             mock.patch.object(config, "selected_profile",
                               return_value=selected),
@@ -691,6 +694,13 @@ class DoctorCliTest(unittest.TestCase):
         text = self._doctor(pi_mismatches=[("qwen", 65536, 8192)])
         self.assertIn("pi models.json", text)
         self.assertIn("--sync-pi", text)
+
+    def test_doctor_warns_codex_mismatch(self):
+        selected = {"id": "qwen", "alias": "qwen", "context": 65536}
+        text = self._doctor(selected=selected,
+                            codex_mismatches=[("model", "gpt-5-codex", "qwen")])
+        self.assertIn("codex config.toml", text)
+        self.assertIn("--sync-codex", text)
 
     def test_doctor_shows_invalid_override_warning(self):
         registry = config.Registry({}, {}, False, [("x", "invalid context")])
@@ -927,7 +937,8 @@ class ApplyCliTest(unittest.TestCase):
 
     def _apply(self, argv, profiles, size_map, machine, running=None,
                server_context=None, identity="", sync_openencode=None,
-               sync_pi=None, start_result=None, peak=None, choose_runtime=None):
+               sync_pi=None, sync_codex=None, selected_profile=None,
+               start_result=None, peak=None, choose_runtime=None):
         out = io.StringIO()
         err = io.StringIO()
 
@@ -945,6 +956,11 @@ class ApplyCliTest(unittest.TestCase):
             "oc_sync": mock.patch.object(cli.opencode, "sync",
                                          return_value=sync_openencode),
             "pi_sync": mock.patch.object(cli.pi, "sync", return_value=sync_pi),
+            "codex_sync": mock.patch.object(cli.codex, "sync",
+                                            return_value=sync_codex),
+            "selected_profile": mock.patch.object(
+                config, "selected_profile",
+                return_value=selected_profile or {"id": "sel", "alias": "sel"}),
             "peak_tokens": mock.patch.object(cli.usage, "peak_tokens",
                                              return_value=peak),
         }
@@ -1073,6 +1089,7 @@ class ApplyCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self._mocks["oc_sync"].assert_called_once()
         self._mocks["pi_sync"].assert_not_called()
+        self._mocks["codex_sync"].assert_not_called()
         installed = self._mocks["oc_sync"].call_args[0][0]
         self.assertIn("m1", installed)
         self.assertEqual(installed["m1"]["context"], 131072)
@@ -1091,6 +1108,7 @@ class ApplyCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self._mocks["oc_sync"].assert_not_called()
         self._mocks["pi_sync"].assert_called_once()
+        self._mocks["codex_sync"].assert_not_called()
 
     def test_apply_syncs_both_with_sync_clients(self):
         machine = self._machine()
@@ -1103,10 +1121,33 @@ class ApplyCliTest(unittest.TestCase):
             ["apply", "--sync-clients"], profiles, {"m1": 4 * self.GIB},
             machine,
             sync_openencode=cli.opencode.SyncResult(path=Path("/x/oc.json")),
-            sync_pi=cli.pi.SyncResult(path=Path("/x/pi.json")))
+            sync_pi=cli.pi.SyncResult(path=Path("/x/pi.json")),
+            sync_codex=cli.codex.SyncResult(path=Path("/x/codex.toml")))
         self.assertEqual(code, 0)
         self._mocks["oc_sync"].assert_called_once()
         self._mocks["pi_sync"].assert_called_once()
+        self._mocks["codex_sync"].assert_called_once()
+        selected_alias = self._mocks["codex_sync"].call_args[0][1]
+        self.assertEqual(selected_alias, "sel")
+
+    def test_apply_syncs_codex_with_flag(self):
+        machine = self._machine()
+        profiles = {
+            "m1": {"id": "m1", "alias": "m1", "path": "/x/m1.gguf",
+                   "context": 8192, "sampling": {}, "repo": "o/r",
+                   "filename": "m1.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--sync-codex"], profiles, {"m1": 4 * self.GIB}, machine,
+            sync_openencode=cli.opencode.SyncResult(path=Path("/x/oc.json")),
+            sync_pi=cli.pi.SyncResult(path=Path("/x/pi.json")),
+            sync_codex=cli.codex.SyncResult(path=Path("/x/codex.toml")),
+            selected_profile={"id": "m1", "alias": "m1"})
+        self.assertEqual(code, 0)
+        self._mocks["oc_sync"].assert_not_called()
+        self._mocks["pi_sync"].assert_not_called()
+        self._mocks["codex_sync"].assert_called_once()
+        self.assertEqual(self._mocks["codex_sync"].call_args[0][1], "m1")
 
     def test_apply_default_does_not_touch_clients(self):
         machine = self._machine()
@@ -1120,6 +1161,7 @@ class ApplyCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self._mocks["oc_sync"].assert_not_called()
         self._mocks["pi_sync"].assert_not_called()
+        self._mocks["codex_sync"].assert_not_called()
 
     def test_apply_errors_on_named_missing_model(self):
         machine = self._machine()
