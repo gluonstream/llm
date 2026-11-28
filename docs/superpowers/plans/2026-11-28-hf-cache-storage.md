@@ -465,48 +465,43 @@ git commit -m "fix: do not warn for expected cache dedupe"
 
 ---
 
-### Task 7: `llm remove`
+### Task 7: `llm remove <exact-name>`
 
 **Files:**
 - Create: `llm/remove.py`
-- Modify: `llm/cli.py` (parser + `cmd_remove`)
-- Modify: `llm/config.py` (remove a user entry and any override)
+- Modify: `llm/cli.py` (parser + `cmd_remove`), `llm/config.py` (`remove_model`)
+- Modify: `llm/__init__.py`, `README.md` (1.4.0)
 - Test: `tests/test_remove.py`, `tests/test_cli.py`
 
 **Interfaces:**
-- Consumes: `hfcache.repo_dir`, `hfcache.resolve_snapshot`, `hfcache.split_set`, `config.resolve_model`, `config.remove_model`, `service.running`, `service.identity`, `service.stop`, `render.human_size`.
+- Consumes: `hfcache.repo_dir`, `hfcache.split_set`, `hfcache.resolve_snapshot`, `config.PROFILES`, `config.load_registry`, `config.save_registry`, `service.running`, `service.identity`, `service.stop`, `render.human_size`.
 - Produces:
-  - `remove.plan(profile, root=None) -> dict` with repo, commit, files (`path`, `filename`, `sha256`, `size`), shared blobs, profile id/source.
-  - `remove.remove(profile, root=None, dry_run=False, force=False) -> dict` with removed/deleted/freed/errors.
-  - `config.remove_model(model_id, path=None) -> None` (delete the user entry and any override, preserving the rest).
+  - `remove.plan(profile, root=None) -> dict` with repo, commit, files (`path`, `filename`, `size`, `shared`), profile source, freed total.
+  - `remove.remove(profile, root=None, apply=False) -> dict`; default is a dry run.
+  - `config.remove_model(model_id, path=None) -> None` (delete a user entry and any override).
   - `cmd_remove(args)` and the `remove` subcommand.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
+def test_exact_name_only(self)
+    # full alias works; a unique prefix is rejected with a clear message
 def test_plan_identifies_split_set_and_shared_blobs(self)
-    # temp cache with two quants; plan(q4 split) lists both shards, not q8
-
-def test_remove_deletes_only_the_named_quant(self)
+    # two quants; plan(q4 split) lists both shards, not q8
+def test_dry_run_is_default(self)
+    # no -apply -> nothing deleted, plan printed
+def test_apply_deletes_only_the_named_quant(self)
     # q4 split removed; q8 snapshot and blob remain; repo dir remains
-
-def test_remove_keeps_blob_referenced_by_another_snapshot(self)
+def test_apply_keeps_blob_referenced_by_another_snapshot(self)
     # same blob linked from two snapshots; removing one keeps the blob
-
-def test_remove_is_dry_run_by_default_without_force(self)
-    # no force -> refused, nothing deleted, message names --force
-
-def test_remove_builtin_requires_force_and_keeps_profile(self)
-    # built-in file deleted with force; built-in profile still resolves and shows missing
-
-def test_remove_user_model_deletes_entry_and_override(self)
+def test_apply_builtin_deletes_files_and_keeps_profile(self)
+    # built-in file deleted; profile still resolves; list shows missing
+def test_apply_user_model_deletes_entry_and_override(self)
     # models.json entry and override removed; other models preserved
-
-def test_remove_stops_the_running_model(self)
-    # running alias matches -> service.stop called before deletion
-
-def test_remove_cli_output_and_exit_code(self)
-    # ["remove", alias, "--force"] prints freed size; dry-run prints planned deletions
+def test_apply_stops_the_running_model(self)
+    # running alias matches -> service.stop before deletion
+def test_cli_flags_and_output(self)
+    # -dry-run explicit; -apply prints freed size; -apply + -dry-run is an error
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -516,28 +511,32 @@ Expected: `ModuleNotFoundError: No module named 'llm.remove'`.
 
 - [ ] **Step 3: Implement**
 
-`remove.plan(profile)`:
-- require `path`; derive `repo`, `commit`/`revision`.
-- if the filename is a split set, collect all shards from the same snapshot dir; otherwise the single file.
-- resolve each snapshot path to its blob; mark a blob `shared` when any other symlink in `snapshots/*/**` resolves to it.
-- return the file list, total size, and profile source (`built-in`, `user`, `cache`).
+`remove.plan(profile, root=None)`:
+- require `path`; if the filename is a split set, collect all shards from the same snapshot dir; otherwise the single file;
+- resolve each snapshot path to its blob; mark a blob `shared` when another symlink in the repo snapshots resolves to it;
+- return repo, commit, files, total size, and source (`built-in`/`user`/`cache`).
 
-`remove.remove(profile, dry_run=False, force=False)`:
-- if not `force` and not `dry_run`: return a refusal result (`needs_force=True`), deleting nothing.
-- if the profile is the running model, `service.stop()` first.
-- dry-run: return the plan with `would delete` entries and the freed total.
-- otherwise: unlink each snapshot symlink; unlink a blob only when it has no other referrer; remove empty snapshot dirs; remove `refs/<revision>` only when its commit snapshot dir is gone; remove the repo dir only when it has no snapshots left.
-- for a user model: `config.remove_model(id)`.
-- for a built-in: keep the profile (files are now missing).
-- return deleted paths, kept/shared blobs, freed bytes, and errors.
+`remove.remove(profile, root=None, apply=False)`:
+- if not `apply`: return the plan with `dry_run=True`, deleting nothing;
+- if the running model's alias matches the profile, `service.stop()` first;
+- unlink each snapshot symlink; unlink a blob only when it has no other referrer; remove empty snapshot dirs; remove `refs/<revision>` and the repo dir only when no snapshots remain;
+- for a user model: `config.remove_model(id)` (also removes any override);
+- for a built-in: keep the curated profile (files now missing) but remove its override;
+- return deleted paths, kept/shared blobs, freed bytes, errors.
 
-`config.remove_model(model_id)`:
-- load the registry; `pop(models, model_id)`, `pop(overrides, model_id)`; save atomically; `reload_profiles()`.
+`config.remove_model(model_id, path=None)`:
+- load the registry; pop `models[id]` and `overrides[id]`; save atomically; `reload_profiles()`.
 
 `cmd_remove`:
-- resolve the model; print the plan (files, sizes, shared blobs); require `--force` unless `--dry-run`; call `remove`; print freed size and any kept blobs; return 1 on errors.
+- resolve the model by **exact** id or alias only (case-insensitive); a prefix or substring is an error listing exact choices;
+- print the plan; default is dry-run; `-apply` executes; `-dry-run` is explicit;
+- `-apply` and `-dry-run` together is an error;
+- print freed bytes and any kept/shared blobs; return 1 on errors.
 
-Parser: `add("remove", cmd_remove, "delete a model's files from the HF cache")`, `model`, `--dry-run`, `--force`.
+Parser: `add("remove", cmd_remove, "delete a model's files from the HF cache")`,
+`model`, `-apply`/`--apply`, `-dry-run`/`--dry-run`.
+
+Bump `__version__` and `LATEST_VERSION` to `1.4.0`; add a README `remove` section.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -547,6 +546,6 @@ Expected: all pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add llm/remove.py llm/cli.py llm/config.py tests/test_remove.py tests/test_cli.py
-git commit -m "feat: add llm remove for cached models"
+git add llm/remove.py llm/cli.py llm/config.py llm/__init__.py README.md tests/test_remove.py tests/test_cli.py
+git commit -m "feat: add llm remove with exact-name dry-run/apply"
 ```

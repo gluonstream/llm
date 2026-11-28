@@ -175,17 +175,20 @@ No more `~/.local/share/llm/models`.
 
 ## Removing a model
 
-`llm remove MODEL [--dry-run] [--force]` deletes only the named model's files:
-all shards of a split set, or the single GGUF. It never deletes other quants in
-the same repo. The service is stopped first when the named model is running.
+`llm remove MODEL` deletes only the **exact** named model's files (case-insensitive
+id or alias; prefixes are rejected). It never deletes other quants in the same
+repo. Default is a dry run; `-apply` executes, `-dry-run` is explicit, and passing
+both is an error. `--apply` is the consent; no separate `--force` flag.
 
-- Blobs are deleted only when no other snapshot in the repo still references
-  them. Empty snapshot/ref/repo directories are removed.
-- A user model's `models.json` entry and any context override are removed.
+- The service is stopped first when the named model is running.
+- All shards of a split set are removed, or the single GGUF.
+- A blob is deleted only when no other snapshot in the repo references it.
+  Empty snapshot/ref/repo directories are removed.
+- A user model's `models.json` entry and any context/runtime override are removed.
 - A cache-discovered model disappears from discovery; no registry entry exists.
 - A built-in keeps its curated profile; deleting its files makes it show as
-  missing. Built-ins and every destructive run require `--force`.
-- `--dry-run` prints the exact files and freed bytes and changes nothing.
+  missing, and its override is removed.
+- The command prints the files, shared blobs, and freed bytes.
 
 ## Visibility
 
