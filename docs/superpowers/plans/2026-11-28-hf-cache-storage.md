@@ -462,3 +462,91 @@ Expected: all pass; `llm list` is quiet on a normal cache.
 git add llm/config.py tests/test_config.py
 git commit -m "fix: do not warn for expected cache dedupe"
 ```
+
+---
+
+### Task 7: `llm remove`
+
+**Files:**
+- Create: `llm/remove.py`
+- Modify: `llm/cli.py` (parser + `cmd_remove`)
+- Modify: `llm/config.py` (remove a user entry and any override)
+- Test: `tests/test_remove.py`, `tests/test_cli.py`
+
+**Interfaces:**
+- Consumes: `hfcache.repo_dir`, `hfcache.resolve_snapshot`, `hfcache.split_set`, `config.resolve_model`, `config.remove_model`, `service.running`, `service.identity`, `service.stop`, `render.human_size`.
+- Produces:
+  - `remove.plan(profile, root=None) -> dict` with repo, commit, files (`path`, `filename`, `sha256`, `size`), shared blobs, profile id/source.
+  - `remove.remove(profile, root=None, dry_run=False, force=False) -> dict` with removed/deleted/freed/errors.
+  - `config.remove_model(model_id, path=None) -> None` (delete the user entry and any override, preserving the rest).
+  - `cmd_remove(args)` and the `remove` subcommand.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_plan_identifies_split_set_and_shared_blobs(self)
+    # temp cache with two quants; plan(q4 split) lists both shards, not q8
+
+def test_remove_deletes_only_the_named_quant(self)
+    # q4 split removed; q8 snapshot and blob remain; repo dir remains
+
+def test_remove_keeps_blob_referenced_by_another_snapshot(self)
+    # same blob linked from two snapshots; removing one keeps the blob
+
+def test_remove_is_dry_run_by_default_without_force(self)
+    # no force -> refused, nothing deleted, message names --force
+
+def test_remove_builtin_requires_force_and_keeps_profile(self)
+    # built-in file deleted with force; built-in profile still resolves and shows missing
+
+def test_remove_user_model_deletes_entry_and_override(self)
+    # models.json entry and override removed; other models preserved
+
+def test_remove_stops_the_running_model(self)
+    # running alias matches -> service.stop called before deletion
+
+def test_remove_cli_output_and_exit_code(self)
+    # ["remove", alias, "--force"] prints freed size; dry-run prints planned deletions
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python3 -m unittest tests.test_remove -v`
+Expected: `ModuleNotFoundError: No module named 'llm.remove'`.
+
+- [ ] **Step 3: Implement**
+
+`remove.plan(profile)`:
+- require `path`; derive `repo`, `commit`/`revision`.
+- if the filename is a split set, collect all shards from the same snapshot dir; otherwise the single file.
+- resolve each snapshot path to its blob; mark a blob `shared` when any other symlink in `snapshots/*/**` resolves to it.
+- return the file list, total size, and profile source (`built-in`, `user`, `cache`).
+
+`remove.remove(profile, dry_run=False, force=False)`:
+- if not `force` and not `dry_run`: return a refusal result (`needs_force=True`), deleting nothing.
+- if the profile is the running model, `service.stop()` first.
+- dry-run: return the plan with `would delete` entries and the freed total.
+- otherwise: unlink each snapshot symlink; unlink a blob only when it has no other referrer; remove empty snapshot dirs; remove `refs/<revision>` only when its commit snapshot dir is gone; remove the repo dir only when it has no snapshots left.
+- for a user model: `config.remove_model(id)`.
+- for a built-in: keep the profile (files are now missing).
+- return deleted paths, kept/shared blobs, freed bytes, and errors.
+
+`config.remove_model(model_id)`:
+- load the registry; `pop(models, model_id)`, `pop(overrides, model_id)`; save atomically; `reload_profiles()`.
+
+`cmd_remove`:
+- resolve the model; print the plan (files, sizes, shared blobs); require `--force` unless `--dry-run`; call `remove`; print freed size and any kept blobs; return 1 on errors.
+
+Parser: `add("remove", cmd_remove, "delete a model's files from the HF cache")`, `model`, `--dry-run`, `--force`.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python3 -m unittest tests.test_remove tests.test_cli -v`
+Expected: all pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/remove.py llm/cli.py llm/config.py tests/test_remove.py tests/test_cli.py
+git commit -m "feat: add llm remove for cached models"
+```
