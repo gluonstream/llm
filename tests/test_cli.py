@@ -1407,7 +1407,7 @@ class AnalyzeCliTest(unittest.TestCase):
 
 
 class RemoveCliTest(unittest.TestCase):
-    PROFILE = {"id": "m", "alias": "m", "repo": "org/model",
+    PROFILE = {"id": "m-123", "alias": "mymodel", "repo": "org/model",
                "filename": "m.gguf", "revision": "main", "path": "/cache/m.gguf",
                "context": 8192, "sampling": {}}
 
@@ -1419,45 +1419,96 @@ class RemoveCliTest(unittest.TestCase):
             "freed": 3,
         }
 
-    def _remove(self, apply=False, freed=3, source="user"):
+    def _dry_run(self):
         result = self._plan()
-        result.update({
-            "dry_run": not apply,
-            "deleted": ["/cache/m.gguf"] if apply else [],
-            "kept": [],
-            "errors": [],
-            "freed": freed,
-            "source": source,
-        })
+        result.update({"dry_run": True, "deleted": [], "kept": [],
+                       "errors": []})
         return result
+
+    def _applied(self):
+        result = self._plan()
+        result.update({"dry_run": False, "deleted": ["/cache/m.gguf"],
+                       "kept": [], "errors": [],
+                       "freed": 2 * 1024 * 1024})
+        return result
+
+    def _fake_remove(self, profile, root=None, apply=False):
+        return self._applied() if apply else self._dry_run()
+
+    def _run(self, argv, typed=None):
+        out = io.StringIO()
+        err = io.StringIO()
+        calls = []
+
+        def fake_remove(profile, root=None, apply=False):
+            calls.append(apply)
+            return self._applied() if apply else self._dry_run()
+
+        with mock.patch.object(cli.remove, "resolve",
+                               return_value=dict(self.PROFILE)), \
+             mock.patch.object(cli.remove, "remove", side_effect=fake_remove), \
+             mock.patch("builtins.input",
+                        return_value=typed if typed is not None else ""), \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(argv)
+        return code, out.getvalue(), err.getvalue(), calls
 
     def test_apply_plus_dry_run_is_an_error(self):
         with mock.patch.object(cli.remove, "resolve") as resolve, \
              mock.patch.object(cli.remove, "remove") as remove_:
             self.assertEqual(
-                run_cli(["remove", "m", "--apply", "--dry-run"]), 1)
+                run_cli(["remove", "mymodel", "--apply", "--dry-run"]), 1)
         resolve.assert_not_called()
         remove_.assert_not_called()
 
     def test_dry_run_prints_plan_and_deletes_nothing(self):
+        input_mock = mock.MagicMock()
         out = io.StringIO()
-        with mock.patch.object(cli.remove, "resolve", return_value=self.PROFILE), \
+        with mock.patch.object(cli.remove, "resolve",
+                               return_value=dict(self.PROFILE)), \
              mock.patch.object(cli.remove, "remove",
-                               return_value=self._remove(apply=False)), \
+                               return_value=self._dry_run()), \
+             mock.patch("builtins.input", input_mock), \
              mock.patch.object(config, "migrate_state", return_value=False), \
              redirect_stdout(out), redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["remove", "m", "--dry-run"]), 0)
+            self.assertEqual(
+                cli.main(["remove", "mymodel", "--dry-run"]), 0)
         text = out.getvalue()
         self.assertIn("Would free", text)
         self.assertIn("m.gguf", text)
+        input_mock.assert_not_called()
 
-    def test_apply_prints_freed_size(self):
-        out = io.StringIO()
-        with mock.patch.object(cli.remove, "resolve", return_value=self.PROFILE), \
-             mock.patch.object(cli.remove, "remove",
-                               return_value=self._remove(apply=True,
-                                                         freed=2 * 1024 * 1024)), \
-             mock.patch.object(config, "migrate_state", return_value=False), \
-             redirect_stdout(out), redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["remove", "m", "--apply"]), 0)
-        self.assertIn("Freed 2.0 MiB", out.getvalue())
+    def test_apply_correct_alias_proceeds(self):
+        code, out, _err, calls = self._run(["remove", "mymodel", "--apply"],
+                                           typed="mymodel")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [False, True])
+        self.assertIn("Freed 2.0 MiB", out)
+
+    def test_apply_correct_id_proceeds(self):
+        code, _out, _err, calls = self._run(["remove", "mymodel", "--apply"],
+                                            typed="m-123")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [False, True])
+
+    def test_apply_wrong_name_cancels(self):
+        code, out, _err, calls = self._run(["remove", "mymodel", "--apply"],
+                                           typed="nope")
+        self.assertEqual(code, 1)
+        self.assertIn("Deletion cancelled.", out)
+        self.assertEqual(calls, [False])
+
+    def test_apply_case_sensitive_cancels(self):
+        code, out, _err, calls = self._run(["remove", "mymodel", "--apply"],
+                                           typed="MYMODEL")
+        self.assertEqual(code, 1)
+        self.assertIn("Deletion cancelled.", out)
+        self.assertEqual(calls, [False])
+
+    def test_apply_empty_input_cancels(self):
+        code, out, _err, calls = self._run(["remove", "mymodel", "--apply"],
+                                           typed="")
+        self.assertEqual(code, 1)
+        self.assertIn("Deletion cancelled.", out)
+        self.assertEqual(calls, [False])

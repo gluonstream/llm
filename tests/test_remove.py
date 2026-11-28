@@ -210,6 +210,58 @@ class RemoveTest(unittest.TestCase):
         self.assertFalse(link.exists())
         self.assertFalse(blob.exists())
 
+    def test_plan_refuses_path_outside_cache(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        victim = Path(outside.name) / "snapshots" / COMMIT / "victim.gguf"
+        victim.parent.mkdir(parents=True, exist_ok=True)
+        victim.write_bytes(b"do not delete")
+        profile = _profile("m", "m", "org/model", "victim.gguf", "main", victim)
+        with self.assertRaises(config.ModelError):
+            remove.remove(profile, root=self.root, apply=True)
+        self.assertTrue(victim.exists())
+
+    def test_plan_refuses_shard_escaping_the_cache(self):
+        repo = "org/model"
+        links, blobs = _split_links(repo, COMMIT, self.root)
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        victim = Path(outside.name) / "victim.gguf"
+        victim.write_bytes(b"do not delete")
+        shard2 = links[1]
+        shard2.unlink()
+        os.symlink(os.path.relpath(victim, shard2.parent), shard2)
+        profile = _profile("m-q4", "q4", repo, "q4/M-Q4-00001-of-00002.gguf",
+                           "main", links[0])
+        with self.assertRaises(config.ModelError):
+            remove.remove(profile, root=self.root, apply=True)
+        self.assertTrue(victim.exists())
+        self.assertTrue(blobs[0].exists())
+
+    def test_plan_refuses_unsafe_revision(self):
+        repo = "org/model"
+        link, blob = _link(repo, "m.gguf", COMMIT, self.root, b"gguf")
+        profile = _profile("m", "m", repo, "m.gguf", "../evil", link)
+        with self.assertRaises(config.ModelError):
+            remove.remove(profile, root=self.root, apply=True)
+        self.assertTrue(link.exists())
+        self.assertTrue(blob.exists())
+
+    def test_split_set_does_not_over_collect_shared_stem(self):
+        repo = "org/model"
+        links, _blobs = _split_links(repo, COMMIT, self.root, stem="M-Q4")
+        _split_links(repo, COMMIT, self.root, stem="M-Q4-K")
+        profile = _profile("m-q4", "q4", repo, "q4/M-Q4-00001-of-00002.gguf",
+                           "main", links[0])
+        result = remove.plan(profile, root=self.root)
+        filenames = sorted(item["filename"] for item in result["files"])
+        self.assertEqual(filenames, [
+            "q4/M-Q4-00001-of-00002.gguf",
+            "q4/M-Q4-00002-of-00002.gguf",
+        ])
+        self.assertEqual(len(result["files"]), 2)
+
+
 
 if __name__ == "__main__":
     unittest.main()

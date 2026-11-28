@@ -599,32 +599,50 @@ def cmd_migrate_cache(args):
     return 0
 
 
+def _confirm_removal(profile):
+    """Ask the user to retype the exact model name before deleting."""
+    model_id = profile["id"]
+    alias = profile.get("alias") or model_id
+    try:
+        typed = input("Type the exact model name to confirm: ")
+    except EOFError:
+        typed = ""
+    typed = typed.strip()
+    return typed == alias or typed == model_id
+
+
 def cmd_remove(args):
     if args.apply and args.dry_run:
         raise config.ModelError("--apply and --dry-run cannot be used together")
     profile = remove.resolve(args.model)
-    result = remove.remove(profile, apply=args.apply)
+    plan = remove.remove(profile, apply=False)
     alias = profile.get("alias") or profile["id"]
 
-    if args.apply:
-        for path in result["deleted"]:
-            print("removed " + path)
-        for blob in result["kept"]:
-            print("kept " + blob + " (still referenced)")
-        for error in result["errors"]:
-            print("error: " + error, file=sys.stderr)
-        print("Freed %s." % render.human_size(result["freed"]))
-        return 1 if result["errors"] else 0
-
     print("%s (%s) from %s @ %s"
-          % (alias, profile["id"], result["repo"], result["commit"]))
-    for item in result["files"]:
+          % (alias, profile["id"], plan["repo"], plan["commit"]))
+    for item in plan["files"]:
         note = " (shared)" if item["shared"] else ""
         print("  %-12s %s%s"
               % (render.human_size(item["size"]), item["filename"], note))
-    print("Would free %s. Re-run with --apply to remove."
-          % render.human_size(result["freed"]))
-    return 0
+    print("Would free %s." % render.human_size(plan["freed"]))
+
+    if not args.apply:
+        print("Re-run with --apply to remove.")
+        return 0
+
+    if not _confirm_removal(profile):
+        print("Deletion cancelled.")
+        return 1
+
+    result = remove.remove(profile, apply=True)
+    for path in result["deleted"]:
+        print("removed " + path)
+    for blob in result["kept"]:
+        print("kept " + blob + " (still referenced)")
+    for error in result["errors"]:
+        print("error: " + error, file=sys.stderr)
+    print("Freed %s." % render.human_size(result["freed"]))
+    return 1 if result["errors"] else 0
 
 
 def _short_context(value):

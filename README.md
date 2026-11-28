@@ -140,7 +140,8 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 
 Every command resolves model names by exact id or alias, then by a unique
 prefix, then by a unique substring, so `llm use inkling` is enough when only
-one model matches.
+one model matches. `llm remove` is the exception: it matches the exact id or
+alias only, never a prefix or substring, so you never delete the wrong model.
 
 ### Inspecting models
 
@@ -277,6 +278,9 @@ llm remove inkling-2-mini --apply  # actually delete the files
   missing and any context/runtime override is dropped), user models are removed
   from `models.json`, and cache-discovered models disappear on the next
   discovery.
+- `--apply` asks you to retype the exact model name (the alias or id,
+  case-sensitive) before it deletes anything; a mismatch cancels and deletes
+  nothing. The default and `--dry-run` never prompt.
 
 ### Sizing the context window
 
