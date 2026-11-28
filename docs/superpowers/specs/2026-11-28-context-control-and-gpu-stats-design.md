@@ -1,7 +1,7 @@
 # LLM — context control, `apply`, and real GPU stats
 
 Date: 2026-11-28
-Status: draft (awaiting approval)
+Status: approved
 
 ## Intent
 

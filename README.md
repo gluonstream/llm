@@ -129,6 +129,8 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 | `llm search <query>` | Search Hugging Face for GGUF models. |
 | `llm get <repo>[:<quant>]` | Download, verify, and register a GGUF model into the cache. |
 | `llm migrate-cache [--dry-run] [--verify] [--keep-old]` | Move legacy model directories into the cache. |
+| `llm context [<model>] [<tokens>|auto]` | Show all contexts, or show/set one model's context window. |
+| `llm apply [<model>...]` | Size context for installed models and write them back. |
 | `llm doctor` | Check llama.cpp, hardware, models, port, and the last failure. |
 | `llm update [--dir PATH]` | Fetch, build, and install the latest source. |
 | `llm version` | Show the installed version and whether it is the latest release. |
@@ -250,6 +252,77 @@ Migration reuses an existing blob when its size matches, hardlinks when
 possible, falls back to copying across filesystems, and only removes a legacy
 directory after every file in it migrated.
 
+### Sizing the context window
+
+`llm context` shows and sets the context window per model, and `llm apply`
+sizes every installed model in one step.
+
+```sh
+llm context                      # table of every model and its context
+llm context qwen                 # one model's value and source (built-in/user/override)
+llm context qwen 65536           # set an explicit value
+llm context qwen auto            # size from the GGUF and machine, then write it
+llm context qwen auto --dry-run
+llm apply                        # size every installed model
+llm apply --dry-run
+```
+
+`llm apply` reads each model's real GGUF metadata (layers, KV heads, head
+dims) to compute the exact KV-cache size, adds the weights and a conservative
+compute margin, and compares it to the machine's memory budget. It picks 128K
+when that fits with headroom, otherwise 64K when that fits, otherwise leaves
+the current value and says why:
+
+```
+MODEL                 FILE       CONTEXT          EST. NEEDED   ACTION
+qwen2.5-7b-instruct   4.4 GiB    8,192 → 128K     12.9 GiB      updated
+inkling-2-mini       16.4 GiB    8,192 → 64K      27.9 GiB      updated
+glm-4.7-flash        16.3 GiB    32,768           31.2 GiB      kept (no candidate fits)
+```
+
+- `--context N` sets an upper bound (a ceiling) for the chooser; it never
+  forces a value that does not fit. For a hard per-model value, use
+  `llm context MODEL N`.
+- `--dry-run` prints the plan and performs no writes, no client sync, and no
+  restart.
+- `--no-restart` writes the new contexts but skips the service restart and
+  prints `llm restart` for you to run.
+- When the running model's context changed (or the server's real `n_ctx`
+  drifted from the profile), `apply` restarts the service to pick it up.
+
+### Keeping OpenCode and Pi in sync
+
+`llm apply --sync-opencode` rewrites only the local `llamacpp` provider's
+`limit.context` for each installed model in `~/.config/opencode/opencode.json`
+(or `LMM_OPENCODE_CONFIG`, or `$XDG_CONFIG_HOME/opencode/opencode.json`),
+leaving every other provider and setting untouched. A timestamped backup is
+written first.
+
+`llm apply --sync-pi` rewrites the local provider's `contextWindow` for each
+installed model in `~/.pi/agent/models.json` (or `PI_CODING_AGENT_DIR`), again
+with a timestamped backup. `--sync-clients` does both.
+
+Neither client is ever written unless you ask; `llm doctor` reports mismatches
+and points at the right flag.
+
+### GPU statistics
+
+On Linux with an NVIDIA GPU, `llm doctor` reports precise per-GPU VRAM,
+utilisation, and per-process usage when `gpustat` is available; otherwise it
+falls back to `nvidia-smi`, AMD sysfs, or `lspci` name-only. On macOS, it uses
+`system_profiler` as before.
+
+`gpustat` is optional. To install it on Arch:
+
+```sh
+sudo pacman -S python-pipx
+pipx ensurepath
+pipx install gpustat
+```
+
+Then reopen the shell (so `pipx`'s bin directory is on `PATH`) and re-run
+`llm doctor`. The fallbacks keep working without it.
+
 ### Diagnosing problems
 
 ```sh
@@ -258,7 +331,9 @@ llm doctor
 
 `llm doctor` reports the detected chip, memory, free disk, installed models,
 whether `llama-server` is present and current, the service state, and a
-one-line explanation of the last load failure.
+one-line explanation of the last load failure. It also shows each model's
+context, per-GPU statistics, and any mismatch between `llm`, the running
+server, OpenCode, or Pi.
 
 ## Configuration
 
@@ -323,7 +398,10 @@ llm/
 │   ├── host.py                     # OS and external tool discovery
 │   ├── service.py                  # llama-server lifecycle and health
 │   ├── hub.py                      # Hugging Face search and downloads
-│   ├── hardware.py                 # hardware detection and fit preflight
+│   ├── hardware.py                 # hardware/GPU detection and fit preflight
+│   ├── gguf.py                     # GGUF metadata and KV-cache sizing
+│   ├── opencode.py                 # OpenCode provider sync (limit.context)
+│   ├── pi.py                       # Pi provider sync (contextWindow)
 │   ├── update.py                   # self-update checkout, build, install
 │   ├── diagnose.py                 # llama.cpp version and failure hints
 │   └── render.py                   # plain-text tables and status output
@@ -350,7 +428,14 @@ llm/
 - **`host.py`** detects the OS and locates external tools such as `llama-server`
   and `lsof`, honoring `LMM_LLAMA_SERVER`.
 - **`hardware.py`** detects RAM, unified memory, GPU, and free disk, then
-  estimates model-fit before a download.
+  estimates model-fit before a download. It also probes per-GPU statistics via
+  `gpustat`/`nvidia-smi`/sysfs and owns the context budget and chooser.
+- **`gguf.py`** parses GGUF metadata (layers, KV heads, head dims) and computes
+  the exact f16 KV-cache size used by `llm apply` and `llm context auto`.
+- **`opencode.py`** rewrites only the OpenCode `llamacpp` provider's
+  `limit.context` when `llm apply --sync-opencode` is requested, with a backup.
+- **`pi.py`** rewrites only the Pi local provider's `contextWindow` when
+  `llm apply --sync-pi` is requested, with a backup.
 - **`update.py`** implements `llm update`: clone or pull a checkout, then run
   `build.sh` and `install.sh`.
 - **`diagnose.py`** parses `llama-server --version`, Homebrew status, and known
@@ -437,6 +522,13 @@ llm logs -n 100
 - **Inkling 2 returns empty content with a very small `max_tokens`** — it
   emits a short reasoning preamble first. Give it enough output tokens, or
   pass `chat_template_kwargs: {"reasoning_effort": "none"}`.
+
+- **Context overflow: `request (N tokens) exceeds the available context size
+  (M tokens)`** — the server's context window is smaller than the request (a
+  common cause is a client such as OpenCode believing the window is 64K while
+  the server runs at 8,192). `llm doctor` explains this and points at
+  `llm apply` (or `llm context <model> N`) to raise it, followed by a
+  restart.
 
 - **`port 18081 is held by an unmanaged PID`** — another process owns the
   port. Stop that process, or set `LMM_PORT` (and `LMM_URL`) to a free port.
