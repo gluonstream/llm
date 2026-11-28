@@ -174,6 +174,28 @@ def _write_ref(repo, commit, root):
     (refs / "main").write_text(commit)
 
 
+def cache_present(entry, root=None):
+    """Return True when every file in the entry is already in the cache."""
+    root = Path(hfcache.cache_root() if root is None else root)
+    repo = entry["repo"]
+    commit = str(entry.get("commit") or entry.get("revision") or "")
+    files = entry.get("files") or []
+    if not files:
+        return False
+    for item in files:
+        blob = hfcache.repo_dir(repo, root) / "blobs" / item["sha256"]
+        try:
+            if blob.stat().st_size != int(item.get("size") or 0):
+                return False
+        except OSError:
+            return False
+        snapshot = hfcache.expected_snapshot(repo, item["filename"], commit,
+                                             root=root)
+        if not snapshot.is_file():
+            return False
+    return True
+
+
 def migrate(entry, root=None, dry_run=False, verify=False, keep_old=False):
     """Move one planned entry into the cache and remove its old directory."""
     root = Path(hfcache.cache_root() if root is None else root)

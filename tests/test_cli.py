@@ -292,27 +292,60 @@ class MigrateCacheCliTest(unittest.TestCase):
                        "size": 10, "path": "/tmp/graphify-gone/gone.gguf",
                        "present": False}],
         }
-        result = {
-            "source": entry["source"],
-            "repo": entry["repo"],
-            "commit": entry["commit"],
-            "status": "missing",
-            "files": [{"filename": "gone.gguf", "status": "missing",
-                       "method": None,
-                       "message": "source file not found"}],
-            "leftover": [],
-        }
         buffer = io.StringIO()
         with mock.patch.object(config, "migrate_state", return_value=False), \
              mock.patch.object(cli.migrate, "plan", return_value=[entry]), \
-             mock.patch.object(cli.migrate, "migrate",
-                               return_value=result) as applied, \
+             mock.patch.object(cli.migrate, "cache_present",
+                               return_value=False), \
+             mock.patch.object(cli.migrate, "migrate") as applied, \
              redirect_stdout(buffer):
             self.assertEqual(cli.main(["migrate-cache"]), 0)
         text = buffer.getvalue()
         self.assertIn("org/gone", text)
         self.assertIn("missing", text)
-        applied.assert_called_once()
+        applied.assert_not_called()
+
+    def test_migrate_cache_does_not_migrate_partial_split(self):
+        payload = b"first shard only"
+        sha256 = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / "share"
+            cache = root / "hub"
+            source = (legacy / "graphify-split"
+                      / "model-00001-of-00002.gguf")
+            source.parent.mkdir(parents=True)
+            source.write_bytes(payload)
+            mapping = {
+                "source": "~/.local/share/graphify-split",
+                "repo": "org/split",
+                "commit": "e" * 40,
+                "revision": "main",
+                "files": [
+                    {"filename": "model-00001-of-00002.gguf",
+                     "sha256": sha256, "size": len(payload)},
+                    {"filename": "model-00002-of-00002.gguf",
+                     "sha256": "f" * 64, "size": 5},
+                ],
+            }
+            real_plan = cli.migrate.plan
+            output = io.StringIO()
+            with mock.patch.dict(os.environ,
+                                 {"HF_HUB_CACHE": str(cache)}), \
+                 mock.patch.object(cli.migrate, "KNOWN_MIGRATIONS",
+                                   [mapping]), \
+                 mock.patch.object(
+                     cli.migrate, "plan",
+                     side_effect=lambda: real_plan(legacy_root=legacy,
+                                                   root=cache)), \
+                 mock.patch.object(config, "migrate_state",
+                                   return_value=False), \
+                 redirect_stdout(output):
+                self.assertEqual(cli.main(["migrate-cache"]), 0)
+            text = output.getvalue()
+            self.assertIn("missing", text)
+            self.assertTrue(source.exists())
+            self.assertFalse((cache / "models--org--split").exists())
 
     def test_migrate_cache_rerun_reports_already_present(self):
         payload = b"already migrated bytes"

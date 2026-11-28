@@ -239,6 +239,26 @@ class MigrateTest(unittest.TestCase):
         self.assertFalse(source.exists())
         self.assertFalse((self.legacy / "graphify-model").exists())
 
+    def test_cache_present_requires_blob_and_snapshot_for_every_file(self):
+        payload = b"cached bytes"
+        entry = self.entry({"model.gguf": payload})
+        self.assertFalse(migrate.cache_present(entry, root=self.cache))
+
+        blob = self.repo() / "blobs" / digest(payload)
+        blob.parent.mkdir(parents=True)
+        blob.write_bytes(payload)
+        snapshot = (self.repo() / "snapshots" / COMMIT / "model.gguf")
+        snapshot.parent.mkdir(parents=True)
+        os.symlink(os.path.relpath(blob, snapshot.parent), snapshot)
+        self.assertTrue(migrate.cache_present(entry, root=self.cache))
+
+        blob.write_bytes(b"wrong size")
+        self.assertFalse(migrate.cache_present(entry, root=self.cache))
+        blob.write_bytes(payload)
+
+        snapshot.unlink()
+        self.assertFalse(migrate.cache_present(entry, root=self.cache))
+
     def test_migrate_keeps_old_directory_with_unrelated_files(self):
         payload = b"model"
         source = self.write(self.legacy / "graphify-model" / "model.gguf",

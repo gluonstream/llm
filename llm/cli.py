@@ -308,6 +308,12 @@ def cmd_migrate_cache(args):
     for entry in entries:
         heading = "%s \u2192 %s @ %s" % (
             entry["source"], entry["repo"], entry["commit"])
+        if (entry.get("status") == "missing"
+                and not migrate.cache_present(entry)):
+            print(heading)
+            print("  missing      %d file(s) not found" % len(entry["files"]))
+            missing += 1
+            continue
         result = migrate.migrate(entry, dry_run=args.dry_run,
                                  verify=args.verify, keep_old=args.keep_old)
         print(heading)
