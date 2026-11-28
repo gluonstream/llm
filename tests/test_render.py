@@ -55,3 +55,39 @@ class RenderTest(unittest.TestCase):
             "qwen2.5-7b-instruct-q4-k-m", running, None,
             "http://127.0.0.1:8080/v1", context=65536, server_context=8192)
         self.assertIn("warning", mismatch)
+
+    def test_format_apply_changed_context(self):
+        rows = [{"model": "qwen", "size": 17629760736, "old": 8192,
+                 "new": 131072, "required": 30000000000, "action": "updated",
+                 "approximate": False, "native": None}]
+        text = render.format_apply(rows)
+        self.assertIn("MODEL", text)
+        self.assertIn("FILE", text)
+        self.assertIn("CONTEXT", text)
+        self.assertIn("EST. NEEDED", text)
+        self.assertIn("ACTION", text)
+        self.assertIn("qwen", text)
+        self.assertIn("16.4 GiB", text)
+        self.assertIn("8K \u2192 128K", text)
+        self.assertIn("updated", text)
+
+    def test_format_apply_unchanged_and_missing(self):
+        rows = [
+            {"model": "a", "size": 10, "old": 8192, "new": 8192,
+             "required": None, "action": "kept", "approximate": False,
+             "native": None},
+            {"model": "gone", "size": None, "old": 8192, "new": 8192,
+             "required": None, "action": "missing", "approximate": False,
+             "native": None},
+        ]
+        text = render.format_apply(rows)
+        self.assertIn("missing", text)
+        self.assertNotIn("\u2192", text)
+
+    def test_format_apply_approx_and_beyond_native(self):
+        rows = [{"model": "m", "size": 10, "old": 8192, "new": 131072,
+                 "required": 100, "action": "updated", "approximate": True,
+                 "native": 32768}]
+        text = render.format_apply(rows)
+        self.assertIn("approx", text)
+        self.assertIn("beyond native 32K", text)

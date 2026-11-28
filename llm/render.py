@@ -3,6 +3,9 @@
 NAME_WIDTH = 32
 SIZE_WIDTH = 10
 CONTEXT_WIDTH = 7
+MODEL_WIDTH = 28
+FILE_WIDTH = 10
+NEEDED_WIDTH = 11
 
 
 def human_size(num_bytes):
@@ -77,4 +80,39 @@ def format_status(selected, running, listener, endpoint, context=None, server_co
     if listener and (not running or running.get("pid") != listener):
         lines.append("warning: port %s is held by an unmanaged PID %s"
                      % (endpoint.rsplit(":", 1)[-1].split("/")[0], listener))
+    return "\n".join(lines)
+
+
+def _context_cell(row):
+    old = row.get("old")
+    new = row.get("new")
+    if old is not None and new is not None and old != new:
+        cell = "%s \u2192 %s" % (short_context(old), short_context(new))
+    else:
+        cell = short_context(new)
+    if row.get("approximate"):
+        cell += " approx"
+    native = row.get("native")
+    if native is not None and new is not None and new > native:
+        cell += " \u00b7 beyond native %s" % short_context(native)
+    return cell
+
+
+def format_apply(rows):
+    """Render the `apply` table: MODEL, FILE, CONTEXT, EST. NEEDED, ACTION."""
+    rows = list(rows)
+    cells = [_context_cell(row) for row in rows]
+    context_width = max([len("CONTEXT")] + [len(cell) for cell in cells])
+    lines = ["  %-*s  %*s  %-*s  %*s  %s" % (
+        MODEL_WIDTH, "MODEL", FILE_WIDTH, "FILE", context_width, "CONTEXT",
+        NEEDED_WIDTH, "EST. NEEDED", "ACTION")]
+    for row, cell in zip(rows, cells):
+        size = row.get("size")
+        file_cell = "missing" if size is None else human_size(size)
+        required = row.get("required")
+        needed_cell = "" if required is None else human_size(required)
+        lines.append("  %-*s  %*s  %-*s  %*s  %s" % (
+            MODEL_WIDTH, row.get("model", ""), FILE_WIDTH, file_cell,
+            context_width, cell, NEEDED_WIDTH, needed_cell,
+            row.get("action", "")))
     return "\n".join(lines)

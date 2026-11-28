@@ -153,6 +153,122 @@ def cmd_context(args):
     return 0
 
 
+def _sync_summary(result):
+    if result.skipped:
+        return ", ".join(result.skipped)
+    parts = []
+    if result.added:
+        parts.append("added %d" % result.added)
+    if result.updated:
+        parts.append("updated %d" % result.updated)
+    if result.unchanged:
+        parts.append("unchanged %d" % result.unchanged)
+    if result.backup:
+        parts.append("backup %s" % result.backup)
+    return ", ".join(parts) if parts else "no changes"
+
+
+def _sync_clients(args, installed, dry_run=False):
+    if args.sync_opencode or args.sync_clients:
+        result = opencode.sync(installed, dry_run=dry_run)
+        print("opencode: " + _sync_summary(result))
+    if args.sync_pi or args.sync_clients:
+        result = pi.sync(installed, dry_run=dry_run)
+        print("pi: " + _sync_summary(result))
+
+
+def cmd_apply(args):
+    if args.models:
+        targets = []
+        for name in args.models:
+            profile = config.resolve_model(name)
+            if _local_size(profile) is None:
+                raise config.ModelError(
+                    "%s is not installed" % (profile.get("alias") or profile["id"]))
+            targets.append(profile)
+    else:
+        targets = list(config.PROFILES.values())
+
+    machine = hardware.detect_hardware(models_dir=hfcache.cache_root())
+
+    rows = []
+    chosen = {}
+    changed_ids = []
+    for profile in targets:
+        model_id = profile["id"]
+        name = profile.get("alias") or model_id
+        size = _local_size(profile)
+        old = profile.get("context")
+        if size is None:
+            rows.append({
+                "model": name, "size": None, "old": old, "new": old,
+                "required": None, "action": "missing",
+                "approximate": False, "native": None,
+            })
+            continue
+        metadata = (gguf.read_metadata(profile["path"])
+                    if profile.get("path") else None)
+        choice = hardware.choose_context(size, old, machine, metadata,
+                                         ceiling=args.context)
+        new = choice.context
+        if new != old:
+            action = "updated"
+            changed_ids.append(model_id)
+        elif choice.reason.startswith("fits"):
+            action = "kept"
+        else:
+            action = "kept (%s)" % choice.reason
+        rows.append({
+            "model": name, "size": size, "old": old, "new": new,
+            "required": choice.required, "action": action,
+            "approximate": choice.approximate, "native": choice.native,
+        })
+        chosen[model_id] = new
+
+    print(render.format_apply(rows))
+
+    target_ids = [profile["id"] for profile in targets]
+    installed = {
+        model_id: dict(config.PROFILES[model_id])
+        for model_id in target_ids
+        if _local_size(config.PROFILES[model_id]) is not None
+    }
+    for model_id, new in chosen.items():
+        if model_id in installed:
+            installed[model_id]["context"] = new
+
+    if args.dry_run:
+        _sync_clients(args, installed, dry_run=True)
+        return 0
+
+    with service.locked():
+        for model_id in changed_ids:
+            config.set_context(model_id, chosen[model_id])
+        config.reload_profiles()
+        _sync_clients(args, installed, dry_run=False)
+
+        pid = service.running()
+        if pid:
+            actual = service.server_context()
+            identity = service.identity(pid)
+            running_id = next(
+                (profile["id"] for profile in config.PROFILES.values()
+                 if profile.get("alias") and profile["alias"] in identity),
+                None)
+            expected = (config.PROFILES[running_id]["context"]
+                        if running_id else config.selected_profile()["context"])
+            if ((actual is not None and actual != expected)
+                    or running_id in changed_ids):
+                if args.no_restart:
+                    print("context changed; run llm restart")
+                else:
+                    service.stop()
+                    pid, created, profile = service.start()
+                    service.wait_ready(pid, created, profile)
+                    print("restarted PID %s" % pid)
+    return 0
+
+
 def cmd_select(args):
     profile = config.resolve_model(args.model)
     with service.locked():
@@ -630,6 +746,15 @@ def build_parser(prog=None):
     command.add_argument("model", nargs="?")
     command.add_argument("tokens", nargs="?")
     command.add_argument("--dry-run", action="store_true")
+    command = add("apply", cmd_apply,
+                  "size context for installed models and write models.json")
+    command.add_argument("models", nargs="*")
+    command.add_argument("--context", type=int, default=None)
+    command.add_argument("--dry-run", action="store_true")
+    command.add_argument("--no-restart", action="store_true")
+    command.add_argument("--sync-opencode", action="store_true")
+    command.add_argument("--sync-pi", action="store_true")
+    command.add_argument("--sync-clients", action="store_true")
     command = add("use", cmd_use, "select a model; restart the service if it is running")
     command.add_argument("model")
     command = add("start", cmd_start, "start the selected model")

@@ -841,3 +841,226 @@ class ContextCliTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertFalse(models.exists())
             self.assertIn("positive integer", err)
+
+
+class ApplyCliTest(unittest.TestCase):
+    GIB = 1024 ** 3
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.models = Path(temporary.name) / "models.json"
+        self._mocks = {}
+
+    def _machine(self, total_ram=None, available_ram=None,
+                 unified=True, vram=None):
+        if total_ram is None:
+            total_ram = 128 * self.GIB
+        return hardware.Hardware(
+            chip="Apple M1", model="arm64", total_ram=total_ram,
+            unified=unified, gpu="unknown", vram=vram,
+            disk_free=100 * self.GIB,
+            available_ram=total_ram if available_ram is None else available_ram,
+            gpus=[])
+
+    def _apply(self, argv, profiles, size_map, machine, running=None,
+               server_context=None, identity="", sync_openencode=None,
+               sync_pi=None, start_result=None):
+        out = io.StringIO()
+        err = io.StringIO()
+
+        def local_size(profile):
+            return size_map.get(profile["id"])
+
+        patches = {
+            "running": mock.patch.object(service, "running", return_value=running),
+            "server_context": mock.patch.object(service, "server_context",
+                                                return_value=server_context),
+            "identity": mock.patch.object(service, "identity", return_value=identity),
+            "stop": mock.patch.object(service, "stop"),
+            "start": mock.patch.object(service, "start", return_value=start_result),
+            "wait_ready": mock.patch.object(service, "wait_ready"),
+            "oc_sync": mock.patch.object(cli.opencode, "sync",
+                                         return_value=sync_openencode),
+            "pi_sync": mock.patch.object(cli.pi, "sync", return_value=sync_pi),
+        }
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(config, "migrate_state",
+                                                  return_value=False))
+            stack.enter_context(mock.patch.object(config, "PROFILES", profiles))
+            stack.enter_context(mock.patch.object(config, "USER_MODELS", self.models))
+            stack.enter_context(mock.patch.object(cli, "_local_size",
+                                                  side_effect=local_size))
+            stack.enter_context(mock.patch.object(cli.gguf, "read_metadata",
+                                                  return_value=None))
+            stack.enter_context(mock.patch.object(cli.hardware, "detect_hardware",
+                                                  return_value=machine))
+            stack.enter_context(mock.patch.object(
+                service, "locked", lambda: contextlib.nullcontext()))
+            for name, patcher in patches.items():
+                self._mocks[name] = stack.enter_context(patcher)
+            stack.enter_context(redirect_stdout(out))
+            stack.enter_context(redirect_stderr(err))
+            code = cli.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_apply_dry_run_writes_nothing(self):
+        machine = self._machine()
+        code, out, _ = self._apply(
+            ["apply", "--dry-run"], dict(config.PROFILES),
+            {config.DEFAULT: 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        self.assertFalse(self.models.exists())
+        self.assertIn("\u2192", out)
+
+    def test_apply_updates_and_reloads(self):
+        machine = self._machine()
+        out = io.StringIO()
+        with mock.patch.object(config, "USER_MODELS", self.models), \
+             mock.patch.object(config, "PROFILES", dict(config.PROFILES)), \
+             mock.patch.object(cli, "_local_size", return_value=4 * self.GIB), \
+             mock.patch.object(cli.gguf, "read_metadata", return_value=None), \
+             mock.patch.object(cli.hardware, "detect_hardware",
+                               return_value=machine), \
+             mock.patch.object(service, "running", return_value=None), \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             mock.patch.object(service, "locked",
+                               lambda: contextlib.nullcontext()), \
+             redirect_stdout(out), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["apply", "qwen2.5-7b-instruct"]), 0)
+            self.assertEqual(config.PROFILES[config.DEFAULT]["context"], 131072)
+        data = json.loads(self.models.read_text())
+        self.assertEqual(data["overrides"][config.DEFAULT]["context"], 131072)
+
+    def test_apply_context_is_ceiling(self):
+        machine = self._machine()
+        code, _, _ = self._apply(
+            ["apply", "--context", "65536"], dict(config.PROFILES),
+            {config.DEFAULT: 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        data = json.loads(self.models.read_text())
+        self.assertEqual(data["overrides"][config.DEFAULT]["context"], 65536)
+
+    def test_apply_skips_missing_models(self):
+        machine = self._machine()
+        profiles = {
+            "installed": {"id": "installed", "alias": "installed",
+                          "path": "/x/installed.gguf", "context": 8192,
+                          "sampling": {}, "repo": "o/r", "filename": "a.gguf",
+                          "revision": "main"},
+            "gone": {"id": "gone", "alias": "gone", "path": "/x/gone.gguf",
+                     "context": 8192, "sampling": {}, "repo": "o/r2",
+                     "filename": "g.gguf", "revision": "main"},
+        }
+        code, out, _ = self._apply(
+            ["apply"], profiles, {"installed": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        self.assertIn("missing", out)
+        data = json.loads(self.models.read_text())
+        self.assertIn("installed", data["overrides"])
+        self.assertNotIn("gone", data["overrides"])
+
+    def test_apply_restarts_when_running_context_changed(self):
+        machine = self._machine(total_ram=24 * self.GIB,
+                                available_ram=24 * self.GIB)
+        identity = ("llama-server -m /x.gguf "
+                    "--alias qwen2.5-7b-instruct-graphify --port 18081")
+        code, out, _ = self._apply(
+            ["apply", "qwen2.5-7b-instruct"], dict(config.PROFILES),
+            {config.DEFAULT: 4 * self.GIB}, machine,
+            running=123, server_context=8192, identity=identity,
+            start_result=(4242, True, {"alias": "qwen", "id": config.DEFAULT}))
+        self.assertEqual(code, 0)
+        self._mocks["stop"].assert_called_once()
+        self._mocks["start"].assert_called_once()
+        self._mocks["wait_ready"].assert_called_once()
+        self.assertIn("restarted PID 4242", out)
+
+    def test_apply_no_restart_prints_hint(self):
+        machine = self._machine(total_ram=24 * self.GIB,
+                                available_ram=24 * self.GIB)
+        identity = ("llama-server -m /x.gguf "
+                    "--alias qwen2.5-7b-instruct-graphify --port 18081")
+        code, out, _ = self._apply(
+            ["apply", "qwen2.5-7b-instruct", "--no-restart"],
+            dict(config.PROFILES), {config.DEFAULT: 4 * self.GIB}, machine,
+            running=123, server_context=8192, identity=identity)
+        self.assertEqual(code, 0)
+        self._mocks["stop"].assert_not_called()
+        self._mocks["start"].assert_not_called()
+        self._mocks["wait_ready"].assert_not_called()
+        self.assertIn("llm restart", out)
+
+    def test_apply_syncs_opencode_with_flag(self):
+        machine = self._machine()
+        profiles = {
+            "m1": {"id": "m1", "alias": "m1", "path": "/x/m1.gguf",
+                   "context": 8192, "sampling": {}, "repo": "o/r",
+                   "filename": "m1.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--sync-opencode"], profiles, {"m1": 4 * self.GIB},
+            machine,
+            sync_openencode=cli.opencode.SyncResult(path=Path("/x/oc.json")),
+            sync_pi=cli.pi.SyncResult(path=Path("/x/pi.json")))
+        self.assertEqual(code, 0)
+        self._mocks["oc_sync"].assert_called_once()
+        self._mocks["pi_sync"].assert_not_called()
+        installed = self._mocks["oc_sync"].call_args[0][0]
+        self.assertIn("m1", installed)
+        self.assertEqual(installed["m1"]["context"], 131072)
+
+    def test_apply_syncs_pi_with_flag(self):
+        machine = self._machine()
+        profiles = {
+            "m1": {"id": "m1", "alias": "m1", "path": "/x/m1.gguf",
+                   "context": 8192, "sampling": {}, "repo": "o/r",
+                   "filename": "m1.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--sync-pi"], profiles, {"m1": 4 * self.GIB}, machine,
+            sync_openencode=cli.opencode.SyncResult(path=Path("/x/oc.json")),
+            sync_pi=cli.pi.SyncResult(path=Path("/x/pi.json")))
+        self.assertEqual(code, 0)
+        self._mocks["oc_sync"].assert_not_called()
+        self._mocks["pi_sync"].assert_called_once()
+
+    def test_apply_syncs_both_with_sync_clients(self):
+        machine = self._machine()
+        profiles = {
+            "m1": {"id": "m1", "alias": "m1", "path": "/x/m1.gguf",
+                   "context": 8192, "sampling": {}, "repo": "o/r",
+                   "filename": "m1.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply", "--sync-clients"], profiles, {"m1": 4 * self.GIB},
+            machine,
+            sync_openencode=cli.opencode.SyncResult(path=Path("/x/oc.json")),
+            sync_pi=cli.pi.SyncResult(path=Path("/x/pi.json")))
+        self.assertEqual(code, 0)
+        self._mocks["oc_sync"].assert_called_once()
+        self._mocks["pi_sync"].assert_called_once()
+
+    def test_apply_default_does_not_touch_clients(self):
+        machine = self._machine()
+        profiles = {
+            "m1": {"id": "m1", "alias": "m1", "path": "/x/m1.gguf",
+                   "context": 8192, "sampling": {}, "repo": "o/r",
+                   "filename": "m1.gguf", "revision": "main"},
+        }
+        code, _, _ = self._apply(
+            ["apply"], profiles, {"m1": 4 * self.GIB}, machine)
+        self.assertEqual(code, 0)
+        self._mocks["oc_sync"].assert_not_called()
+        self._mocks["pi_sync"].assert_not_called()
+
+    def test_apply_errors_on_named_missing_model(self):
+        machine = self._machine()
+        profiles = {
+            "gone": {"id": "gone", "alias": "gone", "path": "/x/gone.gguf",
+                     "context": 8192, "sampling": {}, "repo": "o/r",
+                     "filename": "g.gguf", "revision": "main"},
+        }
+        code, _, err = self._apply(["apply", "gone"], profiles, {}, machine)
+        self.assertEqual(code, 1)
+        self.assertIn("not installed", err)
