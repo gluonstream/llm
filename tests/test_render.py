@@ -147,6 +147,16 @@ class RenderTest(unittest.TestCase):
         self.assertIn("yes", text)
         self.assertIn("beyond native 32K", text)
 
+    def test_format_analysis_kv_cells_in_gib(self):
+        rows = [{"model": "qwen", "alias": "qwen", "size": 3_758_096_384,
+                 "context": 65536, "f16": 3_758_096_384,
+                 "q8_0": 1_996_488_704, "q4_0": 1_056_964_608,
+                 "saving": 0.46875, "fits": True, "native": 32768}]
+        text = render.format_analysis(rows, 65536)
+        self.assertIn("0.98 GiB", text)   # sub-GiB q4_0 still rendered in GiB
+        self.assertIn("3.50 GiB", text)   # whole-GiB f16 keeps the GiB suffix
+        self.assertNotIn("MiB", text)
+
     def test_format_analysis_renders_dashes(self):
         rows = [{"model": "gone", "alias": "gone", "size": None,
                  "context": 65536, "f16": None, "q8_0": None, "q4_0": None,

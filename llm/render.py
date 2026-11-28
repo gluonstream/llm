@@ -156,6 +156,10 @@ def _analysis_size_cell(value):
     return human_size(value) if value is not None else "-"
 
 
+def _analysis_kv_cell(value):
+    return "%.2f GiB" % (value / (1024 ** 3)) if value is not None else "-"
+
+
 def _analysis_saving_cell(saving):
     return "%.1f%%" % (saving * 100) if saving is not None else "-"
 
@@ -182,9 +186,9 @@ def format_analysis(rows, context):
     names = [row.get("alias") or row.get("model") or "" for row in rows]
     sizes = [_analysis_size_cell(row.get("size")) for row in rows]
     contexts = [_analysis_context_cell(row, context) for row in rows]
-    f16s = [_analysis_size_cell(row.get("f16")) for row in rows]
-    q8s = [_analysis_size_cell(row.get("q8_0")) for row in rows]
-    q4s = [_analysis_size_cell(row.get("q4_0")) for row in rows]
+    f16s = [_analysis_kv_cell(row.get("f16")) for row in rows]
+    q8s = [_analysis_kv_cell(row.get("q8_0")) for row in rows]
+    q4s = [_analysis_kv_cell(row.get("q4_0")) for row in rows]
     savings = [_analysis_saving_cell(row.get("saving")) for row in rows]
     fits = [_analysis_fit_cell(row.get("fits")) for row in rows]
 
