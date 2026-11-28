@@ -9,9 +9,9 @@ class RuntimePolicyTest(unittest.TestCase):
         policy = runtime.POLICIES["balanced"]
         self.assertEqual(policy["kv_type_k"], "q8_0")
         self.assertEqual(policy["kv_type_v"], "q8_0")
-        self.assertEqual(policy["candidates"], [131072, 65536])
-        self.assertEqual(policy["batch"], 2048)
-        self.assertEqual(policy["ubatch"], 512)
+        self.assertEqual(policy["candidates"], [65536])
+        self.assertEqual(policy["batch"], 1024)
+        self.assertEqual(policy["ubatch"], 256)
         self.assertEqual(policy["cache_reuse"], 256)
         self.assertTrue(policy["fit"])
         self.assertEqual(policy["fit_target"], 2048)
@@ -32,8 +32,8 @@ class RuntimePolicyTest(unittest.TestCase):
         self.assertEqual(extended["kv_type_k"], "q8_0")
         self.assertEqual(extended["kv_type_v"], "q8_0")
         self.assertEqual(extended["candidates"], [131072])
-        self.assertEqual(extended["batch"], 2048)
-        self.assertEqual(extended["ubatch"], 1024)
+        self.assertEqual(extended["batch"], 1024)
+        self.assertEqual(extended["ubatch"], 256)
 
     def test_policy_runtime_omits_candidates(self):
         policy = runtime.policy_runtime("balanced")
@@ -41,15 +41,12 @@ class RuntimePolicyTest(unittest.TestCase):
         self.assertEqual(policy["kv_type_k"], "q8_0")
 
     def test_candidates_filter_by_observed_peak(self):
-        self.assertEqual(runtime.candidates_for("balanced", 40_000),
-                         [131072, 65536])
-        self.assertEqual(runtime.candidates_for("balanced", 70_000), [131072])
+        self.assertEqual(runtime.candidates_for("balanced", 40_000), [65536])
+        self.assertEqual(runtime.candidates_for("balanced", 70_000), [65536])
         # Peak beyond any candidate still returns the full list.
-        self.assertEqual(runtime.candidates_for("balanced", 200_000),
-                         [131072, 65536])
+        self.assertEqual(runtime.candidates_for("balanced", 200_000), [65536])
         # No observation: unchanged.
-        self.assertEqual(runtime.candidates_for("balanced"),
-                         [131072, 65536])
+        self.assertEqual(runtime.candidates_for("balanced"), [65536])
 
     def test_kv_override_applies_to_both(self):
         policy = runtime.policy_runtime("aggressive", {"kv": "q5_1"})
@@ -97,13 +94,27 @@ class RuntimePolicyTest(unittest.TestCase):
         balanced = runtime.choose_runtime(
             12 * hardware.GIB, 8192, machine_under_test, metadata,
             policy="balanced")
-        conservative = runtime.choose_runtime(
+        extended = runtime.choose_runtime(
             12 * hardware.GIB, 8192, machine_under_test, metadata,
-            policy="conservative")
-        self.assertEqual(balanced.context, 131072)
+            policy="extended")
+        self.assertEqual(balanced.context, 65536)
         self.assertEqual(balanced.runtime["kv_type_k"], "q8_0")
-        self.assertEqual(conservative.context, 65536)
-        self.assertEqual(conservative.runtime["kv_type_k"], "f16")
+        self.assertEqual(extended.context, 131072)
+        self.assertEqual(extended.runtime["kv_type_k"], "q8_0")
+
+    def test_balanced_downgrades_a_previous_128k_to_64k(self):
+        metadata = model_metadata()
+        choice = runtime.choose_runtime(
+            12 * hardware.GIB, 131072, machine(40 * hardware.GIB), metadata,
+            policy="balanced")
+        self.assertEqual(choice.context, 65536)
+
+    def test_explicit_lower_ceiling_is_respected(self):
+        metadata = model_metadata()
+        choice = runtime.choose_runtime(
+            12 * hardware.GIB, 131072, machine(40 * hardware.GIB), metadata,
+            policy="balanced", ceiling=32768)
+        self.assertEqual(choice.context, 32768)
 
     def test_choose_runtime_keeps_current_when_none_fit(self):
         metadata = model_metadata()
