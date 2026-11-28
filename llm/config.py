@@ -104,6 +104,18 @@ def _alias(profile):
     return str(profile.get("alias") or "").strip().lower()
 
 
+def _identity(profile):
+    """Return the keys that identify a profile's underlying model file."""
+    repo = profile.get("repo")
+    filename = profile.get("filename")
+    source = (str(repo), str(filename)) if repo and filename else None
+    path = profile.get("path")
+    resolved = None
+    if path:
+        resolved = os.path.realpath(os.path.expanduser(str(path)))
+    return source, resolved
+
+
 def _resolve_builtin(profile):
     """Point a built-in at its cache snapshot, or at where it would live."""
     profile = dict(profile)
@@ -131,6 +143,16 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
         if alias:
             aliases[alias] = model_id
 
+    user_profiles = load_user_profiles(path)
+    sources = set()
+    paths = set()
+    for profile in list(merged.values()) + list(user_profiles.values()):
+        model_source, model_path = _identity(profile)
+        if model_source:
+            sources.add(model_source)
+        if model_path:
+            paths.add(model_path)
+
     if discovered is None and not os.environ.get("LMM_NO_CACHE"):
         discovered = hfcache.discover(root=HF_CACHE, sampling=DEFAULT_SAMPLING)
     for model_id, profile in (discovered or {}).items():
@@ -139,12 +161,20 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
         alias = _alias(profile)
         if alias and alias in aliases:
             continue
+        model_source, model_path = _identity(profile)
+        if ((model_source and model_source in sources)
+                or (model_path and model_path in paths)):
+            continue
         merged[model_id] = dict(profile)
+        if model_source:
+            sources.add(model_source)
+        if model_path:
+            paths.add(model_path)
         if alias:
             aliases[alias] = model_id
 
     user_ids = set()
-    for model_id, profile in load_user_profiles(path).items():
+    for model_id, profile in user_profiles.items():
         if model_id in builtin_ids:
             continue
         alias = _alias(profile)

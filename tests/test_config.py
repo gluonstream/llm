@@ -189,12 +189,14 @@ class CacheProfileTest(unittest.TestCase):
             registry = self._empty_registry(tmp)
             discovered = {
                 "qwen2.5-coder-keep": profile(
-                    "qwen2.5-coder-keep", "qwen2.5-coder-keep"),
+                    "qwen2.5-coder-keep", "qwen2.5-coder-keep",
+                    path="/tmp/keep.gguf"),
                 "qwen2.5-coder-lose": profile(
-                    "qwen2.5-coder-lose", "shared-alias"),
+                    "qwen2.5-coder-lose", "shared-alias",
+                    path="/tmp/lose.gguf"),
             }
             registry.write_text(json.dumps({
-                "mine": profile("mine", "shared-alias"),
+                "mine": profile("mine", "shared-alias", path="/tmp/mine.gguf"),
             }))
             merged = config.load_profiles(
                 path=registry, discovered=discovered)
@@ -227,6 +229,94 @@ class CacheProfileTest(unittest.TestCase):
                 path=registry, discovered=discovered)
             self.assertNotIn("by-alias", merged)
             self.assertEqual(merged[config.DEFAULT]["alias"], alias)
+
+    def test_discovery_does_not_duplicate_a_builtin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = config.BUILTIN_PROFILES[config.DEFAULT]
+            snapshot = cache_snapshot(
+                root, builtin["repo"], builtin["filename"])
+            registry = self._empty_registry(tmp)
+            discovered = {
+                "qwen2-5-7b-instruct-q4-k-m": {
+                    "id": "qwen2-5-7b-instruct-q4-k-m",
+                    "alias": "qwen2-5-7b-instruct-q4-k-m",
+                    "repo": builtin["repo"],
+                    "filename": builtin["filename"],
+                    "revision": "main",
+                    "path": str(snapshot),
+                    "context": 8192,
+                    "sampling": {},
+                },
+            }
+            with mock.patch.object(config, "HF_CACHE", root):
+                merged = config.load_profiles(
+                    path=registry, discovered=discovered)
+            self.assertNotIn("qwen2-5-7b-instruct-q4-k-m", merged)
+            self.assertEqual(set(merged), set(config.BUILTIN_PROFILES))
+
+    def test_discovery_skips_same_resolved_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = self._empty_registry(tmp)
+            target = root / "shared.gguf"
+            target.write_bytes(b"x")
+            link = root / "linked.gguf"
+            link.symlink_to(target)
+            registry.write_text(json.dumps({
+                "mine": profile("mine", "mine", path=str(target)),
+            }))
+            discovered = {
+                "different-metadata": {
+                    "id": "different-metadata",
+                    "alias": "different-metadata",
+                    "repo": "org/different",
+                    "filename": "different.gguf",
+                    "revision": "main",
+                    "path": str(link),
+                    "context": 8192,
+                    "sampling": {},
+                },
+            }
+            with mock.patch.object(config, "HF_CACHE", root):
+                merged = config.load_profiles(
+                    path=registry, discovered=discovered)
+            self.assertNotIn("different-metadata", merged)
+            self.assertIn("mine", merged)
+
+    def test_discovery_keeps_distinct_cache_models(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = config.BUILTIN_PROFILES[config.DEFAULT]
+            snapshot = cache_snapshot(
+                root, builtin["repo"], builtin["filename"])
+            registry = self._empty_registry(tmp)
+            discovered = {
+                "builtin-copy": {
+                    "id": "builtin-copy",
+                    "alias": "builtin-copy",
+                    "repo": builtin["repo"],
+                    "filename": builtin["filename"],
+                    "revision": "main",
+                    "path": str(snapshot),
+                    "context": 8192,
+                    "sampling": {},
+                },
+                "qwen2-5-coder-14b-instruct-q4-k-m": profile(
+                    "qwen2-5-coder-14b-instruct-q4-k-m",
+                    "qwen2-5-coder-14b-instruct-q4-k-m",
+                    path=str(root / "coder.gguf")),
+                "qwen3-8-flash-next-gsq-rco-q2-0": profile(
+                    "qwen3-8-flash-next-gsq-rco-q2-0",
+                    "qwen3-8-flash-next-gsq-rco-q2-0",
+                    path=str(root / "flash.gguf")),
+            }
+            with mock.patch.object(config, "HF_CACHE", root):
+                merged = config.load_profiles(
+                    path=registry, discovered=discovered)
+            self.assertNotIn("builtin-copy", merged)
+            self.assertIn("qwen2-5-coder-14b-instruct-q4-k-m", merged)
+            self.assertIn("qwen3-8-flash-next-gsq-rco-q2-0", merged)
 
     def test_lmm_no_cache_disables_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:
