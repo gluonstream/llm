@@ -1,6 +1,7 @@
 """Sync llama.cpp context limits into an OpenCode config file."""
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -8,6 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+_CONTEXT_LABEL = re.compile(r"^(.*?)\s*\(local,\s*\d+\s*k\)$", re.IGNORECASE)
 
 
 @dataclass
@@ -65,6 +68,14 @@ def _alias_contexts(profiles):
     return result
 
 
+def _context_label(name, context):
+    """Return the name with its ``(local, Nk)`` suffix refreshed, or None."""
+    match = _CONTEXT_LABEL.match(str(name or ""))
+    if match is None:
+        return None
+    return "%s (local, %dk)" % (match.group(1), context // 1024)
+
+
 def _write(path, data):
     """Back up path, then atomically rewrite it; return the backup path."""
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -112,18 +123,23 @@ def sync(profiles, path=None, dry_run=False):
             result.updated += 1
             changed = True
             continue
+        entry_changed = False
         limit = entry.get("limit")
         if not isinstance(limit, dict):
             entry["limit"] = {"context": context}
+            entry_changed = True
+        elif limit.get("context") != context:
+            limit["context"] = context
+            entry_changed = True
+        label = _context_label(entry.get("name"), context)
+        if label is not None and label != entry.get("name"):
+            entry["name"] = label
+            entry_changed = True
+        if entry_changed:
             result.updated += 1
             changed = True
-            continue
-        if limit.get("context") == context:
+        else:
             result.unchanged += 1
-            continue
-        limit["context"] = context
-        result.updated += 1
-        changed = True
 
     if not changed or dry_run:
         return result

@@ -87,7 +87,36 @@ class OpenCodeSyncTest(unittest.TestCase):
             entry = models_map(path)["qwen2.5-7b-instruct-graphify"]
             self.assertEqual(entry["limit"]["context"], 8192)
             self.assertEqual(entry["limit"]["output"], 8192)
+            self.assertEqual(entry["name"], "Qwen2.5 7B Instruct Graphify (local, 8k)")
+
+    def test_sync_refreshes_stale_context_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_config(tmp, models={
+                "qwen2.5-7b-instruct-graphify": {
+                    "name": "Qwen2.5 7B Instruct Graphify (local, 8k)",
+                    "limit": {"context": 65536, "output": 8192}},
+            })
+            result = opencode.sync(
+                {"qwen": {"id": "qwen",
+                          "alias": "qwen2.5-7b-instruct-graphify",
+                          "context": 65536}}, path=path)
+            self.assertEqual(result.updated, 1)
+            self.assertEqual(result.unchanged, 0)
+            entry = models_map(path)["qwen2.5-7b-instruct-graphify"]
             self.assertEqual(entry["name"], "Qwen2.5 7B Instruct Graphify (local, 64k)")
+            self.assertEqual(entry["limit"]["context"], 65536)
+
+    def test_sync_keeps_custom_name_without_context_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_config(tmp, models={
+                "qwen2.5-7b-instruct-graphify": {
+                    "name": "My local Qwen",
+                    "limit": {"context": 8192}},
+            })
+            opencode.sync({"qwen": QWEN}, path=path)
+            self.assertEqual(
+                models_map(path)["qwen2.5-7b-instruct-graphify"]["name"],
+                "My local Qwen")
 
     def test_sync_adds_missing_entry(self):
         with tempfile.TemporaryDirectory() as tmp:

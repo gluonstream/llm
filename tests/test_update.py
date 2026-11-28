@@ -60,11 +60,11 @@ class UpdateTest(unittest.TestCase):
 
     def test_latest_version_decodes_github_api_json(self):
         payload = json.dumps({
-            "content": base64.b64encode(b"1.4.5\n").decode("ascii")})
+            "content": base64.b64encode(b"1.4.6\n").decode("ascii")})
         self.assertEqual(
             update.latest_version(
                 opener=lambda url, timeout: FakeResponse(payload)),
-            "1.4.5")
+            "1.4.6")
 
     def test_latest_version_returns_none_on_failure_or_invalid(self):
         def opener(url, timeout):
