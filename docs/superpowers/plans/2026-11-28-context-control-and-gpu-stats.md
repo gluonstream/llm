@@ -333,7 +333,7 @@ git commit -m "feat: read real GPU usage via gpustat with fallbacks"
 - Test: `tests/test_config.py` (append to `RegistryTest`)
 
 **Interfaces:**
-- Consumes: existing `BUILTIN_PROFILES`, `USER_MODELS`, `validate_profile`, `load_user_profiles`. **After the HF-cache plan, `load_profiles` also resolves built-ins from cache coordinates and merges `hfcache.discover(...)` profiles. Preserve that discovery merge when adding overrides, and make overrides apply to discovered profiles by id.**
+- Consumes: existing `BUILTIN_PROFILES`, `USER_MODELS`, `validate_profile`, `load_user_profiles`. **After the HF-cache plan, `load_profiles` resolves built-ins from cache coordinates, merges `hfcache.discover(...)` profiles with identity dedupe, and populates `warnings`. Preserve all of that when adding overrides. Merge order is built-ins → discovered → user → overrides; overrides must apply to discovered profiles by id. `set_context` updates a `models.json` entry for user models and writes an override for built-ins or discovered models. `context_source` returns `"cache"` for discovered ids.**
 - Produces:
   - `@dataclass Registry` with `models: dict`, `overrides: dict`, `wrapped: bool`, `invalid: list`
   - `load_registry(path=None) -> Registry`
