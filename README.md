@@ -129,6 +129,7 @@ Then point any OpenAI-compatible client at `http://127.0.0.1:18081/v1`.
 | `llm search <query>` | Search Hugging Face for GGUF models. |
 | `llm get <repo>[:<quant>]` | Download, verify, and register a GGUF model into the cache. |
 | `llm migrate-cache [--dry-run] [--verify] [--keep-old]` | Move legacy model directories into the cache. |
+| `llm remove <model> [--apply]` | Delete one model's files from the cache (dry run by default). |
 | `llm context [<model>] [<tokens>|auto]` | Show all contexts, or show/set one model's context window. |
 | `llm analyze [--context N]` | Show the KV-cache memory for each model at f16/q8_0/q4_0. |
 | `llm apply [<model>...]` | Size context and runtime flags for installed models and write them back. |
@@ -252,6 +253,30 @@ llm migrate-cache --keep-old    # leave the old directories in place
 Migration reuses an existing blob when its size matches, hardlinks when
 possible, falls back to copying across filesystems, and only removes a legacy
 directory after every file in it migrated.
+
+### Removing a model
+
+`llm remove` deletes a single model's files from the Hugging Face cache. It
+matches the name exactly (case-insensitive id or alias); a prefix or substring
+is rejected with a list of exact choices so you never remove the wrong quant.
+
+```sh
+llm remove inkling-2-mini          # dry run: print the plan, delete nothing
+llm remove inkling-2-mini --dry-run
+llm remove inkling-2-mini --apply  # actually delete the files
+```
+
+- Only the named model's files are removed. For a split set, every shard in the
+  snapshot is collected; other quants in the same snapshot are left alone.
+- Blobs are shared between snapshots by design, so a blob that is still
+  referenced by another snapshot is kept and reported; only the symlink is
+  removed. Empty snapshot directories, `refs/<revision>`, and the repository
+  directory are cleaned up once nothing references them.
+- The running model is stopped first if its alias matches the model being
+  removed. Built-in profiles keep their curated entry (the file simply shows as
+  missing and any context/runtime override is dropped), user models are removed
+  from `models.json`, and cache-discovered models disappear on the next
+  discovery.
 
 ### Sizing the context window
 

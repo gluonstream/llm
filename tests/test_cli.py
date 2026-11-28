@@ -574,21 +574,21 @@ class VersionCliTest(unittest.TestCase):
 
     def test_version_prints_installed_and_up_to_date(self):
         self.assertEqual(self._output(["version"]).splitlines(), [
-            "llm 1.3.0",
-            "last version is 1.3.0. you are up to date.",
+            "llm 1.4.0",
+            "last version is 1.4.0. you are up to date.",
         ])
 
     def test_version_uses_invocation_name(self):
         with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/lmm"]):
             lines = self._output(["version"]).splitlines()
-        self.assertEqual(lines[0], "lmm 1.3.0")
+        self.assertEqual(lines[0], "lmm 1.4.0")
 
     def test_version_points_to_update_when_latest_is_newer(self):
-        with mock.patch("llm.LATEST_VERSION", "1.3.1"):
+        with mock.patch("llm.LATEST_VERSION", "1.4.1"):
             lines = self._output(["version"]).splitlines()
         self.assertEqual(lines, [
-            "llm 1.3.0",
-            "last version is 1.3.1. run `llm update` to update.",
+            "llm 1.4.0",
+            "last version is 1.4.1. run `llm update` to update.",
         ])
 
 
@@ -1388,3 +1388,60 @@ class AnalyzeCliTest(unittest.TestCase):
             self.assertEqual(cli.main(["analyze", "--context", "131072"]), 0)
         self.assertEqual(captured["context"], 131072)
         self.assertIn("128K", out.getvalue())
+
+
+class RemoveCliTest(unittest.TestCase):
+    PROFILE = {"id": "m", "alias": "m", "repo": "org/model",
+               "filename": "m.gguf", "revision": "main", "path": "/cache/m.gguf",
+               "context": 8192, "sampling": {}}
+
+    def _plan(self):
+        return {
+            "repo": "org/model", "commit": "a" * 40, "source": "user",
+            "files": [{"path": "/cache/m.gguf", "filename": "m.gguf",
+                       "size": 3, "shared": False}],
+            "freed": 3,
+        }
+
+    def _remove(self, apply=False, freed=3, source="user"):
+        result = self._plan()
+        result.update({
+            "dry_run": not apply,
+            "deleted": ["/cache/m.gguf"] if apply else [],
+            "kept": [],
+            "errors": [],
+            "freed": freed,
+            "source": source,
+        })
+        return result
+
+    def test_apply_plus_dry_run_is_an_error(self):
+        with mock.patch.object(cli.remove, "resolve") as resolve, \
+             mock.patch.object(cli.remove, "remove") as remove_:
+            self.assertEqual(
+                run_cli(["remove", "m", "--apply", "--dry-run"]), 1)
+        resolve.assert_not_called()
+        remove_.assert_not_called()
+
+    def test_dry_run_prints_plan_and_deletes_nothing(self):
+        out = io.StringIO()
+        with mock.patch.object(cli.remove, "resolve", return_value=self.PROFILE), \
+             mock.patch.object(cli.remove, "remove",
+                               return_value=self._remove(apply=False)), \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             redirect_stdout(out), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["remove", "m", "--dry-run"]), 0)
+        text = out.getvalue()
+        self.assertIn("Would free", text)
+        self.assertIn("m.gguf", text)
+
+    def test_apply_prints_freed_size(self):
+        out = io.StringIO()
+        with mock.patch.object(cli.remove, "resolve", return_value=self.PROFILE), \
+             mock.patch.object(cli.remove, "remove",
+                               return_value=self._remove(apply=True,
+                                                         freed=2 * 1024 * 1024)), \
+             mock.patch.object(config, "migrate_state", return_value=False), \
+             redirect_stdout(out), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["remove", "m", "--apply"]), 0)
+        self.assertIn("Freed 2.0 MiB", out.getvalue())

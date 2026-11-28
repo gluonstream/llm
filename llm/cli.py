@@ -7,8 +7,8 @@ import subprocess
 import sys
 
 from . import (analysis, codex, config, diagnose, gguf, hardware, hfcache, host,
-               hub, migrate, opencode, pi, render, runtime, service, update,
-               usage)
+               hub, migrate, opencode, pi, remove, render, runtime, service,
+               update, usage)
 
 _subparsers = {}
 # Legacy download location. `get` writes the Hugging Face cache instead, but
@@ -599,6 +599,34 @@ def cmd_migrate_cache(args):
     return 0
 
 
+def cmd_remove(args):
+    if args.apply and args.dry_run:
+        raise config.ModelError("--apply and --dry-run cannot be used together")
+    profile = remove.resolve(args.model)
+    result = remove.remove(profile, apply=args.apply)
+    alias = profile.get("alias") or profile["id"]
+
+    if args.apply:
+        for path in result["deleted"]:
+            print("removed " + path)
+        for blob in result["kept"]:
+            print("kept " + blob + " (still referenced)")
+        for error in result["errors"]:
+            print("error: " + error, file=sys.stderr)
+        print("Freed %s." % render.human_size(result["freed"]))
+        return 1 if result["errors"] else 0
+
+    print("%s (%s) from %s @ %s"
+          % (alias, profile["id"], result["repo"], result["commit"]))
+    for item in result["files"]:
+        note = " (shared)" if item["shared"] else ""
+        print("  %-12s %s%s"
+              % (render.human_size(item["size"]), item["filename"], note))
+    print("Would free %s. Re-run with --apply to remove."
+          % render.human_size(result["freed"]))
+    return 0
+
+
 def _short_context(value):
     return "missing" if value is None else render.short_context(value)
 
@@ -887,6 +915,13 @@ def build_parser(prog=None):
                          help="hash files before and after migrating")
     command.add_argument("--keep-old", action="store_true",
                          help="keep the old model directories")
+    command = add("remove", cmd_remove,
+                  "delete a model's files from the HF cache")
+    command.add_argument("model")
+    command.add_argument("--apply", action="store_true",
+                         help="delete the files (default is a dry run)")
+    command.add_argument("--dry-run", action="store_true",
+                         help="show the plan without deleting anything")
     command = add("help", cmd_help, "show this help or help for one command")
     command.add_argument("topic", nargs="?")
 

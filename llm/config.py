@@ -430,6 +430,21 @@ def register_model(profile, path=None, profiles=None):
     return profile
 
 
+def remove_model(model_id, path=None):
+    """Delete a user model entry and any override, then reload profiles."""
+    registry = load_registry(path)
+    changed = False
+    if model_id in registry.models:
+        registry.models.pop(model_id)
+        changed = True
+    if model_id in registry.overrides:
+        registry.overrides.pop(model_id)
+        changed = True
+    if changed:
+        save_registry(registry, path)
+    reload_profiles(path=path)
+
+
 def set_context(model_id, context, path=None):
     if type(context) is not int or context <= 0:
         raise ModelError("context must be a positive integer, got %r"
