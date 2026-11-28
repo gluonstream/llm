@@ -185,6 +185,19 @@ class RegistryTest(unittest.TestCase):
             merged = config.load_profiles(path=registry, discovered={})
             self.assertEqual(merged["mine"]["context"], 131072)
 
+    def test_override_applies_to_discovered_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            registry.write_text(json.dumps({
+                "overrides": {"cache-1": {"context": 65536}}}))
+            merged = config.load_profiles(
+                path=registry,
+                discovered={"cache-1": self._profile(
+                    "cache-1", "cache-one", path=str(Path(tmp) / "cache.gguf"))},
+                warnings=[])
+            self.assertEqual(merged["cache-1"]["context"], 65536)
+            self.assertEqual(merged["cache-1"]["alias"], "cache-one")
+
     def test_invalid_override_is_ignored_and_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = Path(tmp) / "models.json"
@@ -236,6 +249,18 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(reg.models["mine"]["context"], 131072)
             self.assertNotIn("mine", reg.overrides)
 
+    def test_set_context_writes_override_for_discovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            discovered = self._profile(
+                "cache-1", "cache-one", path=str(Path(tmp) / "cache.gguf"))
+            with mock.patch.object(config, "PROFILES", {"cache-1": discovered}), \
+                 mock.patch.object(config, "USER_MODELS", registry):
+                config.set_context("cache-1", 131072)
+            reg = config.load_registry(registry)
+            self.assertEqual(reg.overrides["cache-1"]["context"], 131072)
+            self.assertNotIn("cache-1", reg.models)
+
     def test_reload_profiles_refreshes_global(self):
         original_profiles = config.PROFILES
         original_warnings = config.PROFILE_WARNINGS
@@ -263,6 +288,17 @@ class RegistryTest(unittest.TestCase):
             registry.write_text(json.dumps({"mine": self._profile()}))
             self.assertEqual(config.context_source("mine", path=registry), "user")
             self.assertEqual(config.context_source("nope", path=registry), "unknown")
+
+    def test_context_source_reports_cache_for_discovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            discovered = dict(self._profile(
+                "cache-1", "cache-one", path=str(Path(tmp) / "cache.gguf")))
+            discovered["source"] = "cache"
+            with mock.patch.object(config, "PROFILES",
+                                   {"cache-1": discovered}), \
+                 mock.patch.object(config, "USER_MODELS",
+                                   Path(tmp) / "models.json"):
+                self.assertEqual(config.context_source("cache-1"), "cache")
 
 
 class CacheProfileTest(unittest.TestCase):
