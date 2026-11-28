@@ -14,6 +14,15 @@ META = {
     "qwen2.context_length": 32768,
 }
 
+INKLING_META = {
+    "general.architecture": "inkling2_loop",
+    "inkling2_loop.block_count": 24,
+    "inkling2_loop.embedding_length": 2304,
+    "inkling2_loop.attention.head_count": [24] * 24,
+    "inkling2_loop.attention.head_count_kv": [8] * 24,
+    "inkling2_loop.context_length": 1048576,
+}
+
 
 def _string_bytes(value):
     data = value.encode("utf-8")
@@ -103,6 +112,33 @@ class GgufTest(unittest.TestCase):
         expected = 131072 * (28 * 4) * (128 * 1.0625 + 128 * 2.0)
         self.assertEqual(
             gguf.kv_cache_bytes(metadata, 131072, "q8_0", "f16"), expected)
+
+    def test_kv_cache_handles_per_layer_head_counts(self):
+        metadata = gguf.read_metadata(self._write(INKLING_META))
+        self.assertEqual(gguf.kv_cache_bytes(metadata, 65536), 4_831_838_208)
+        self.assertEqual(
+            gguf.kv_cache_bytes(metadata, 65536, "q8_0", "q8_0"),
+            2_566_914_048)
+        self.assertEqual(
+            gguf.kv_cache_bytes(metadata, 65536, "q4_0", "q4_0"),
+            1_358_954_496)
+
+    def test_kv_cache_list_heads_with_scalar_kv(self):
+        meta = dict(META)
+        meta["qwen2.attention.head_count"] = [28] * 28
+        metadata = gguf.read_metadata(self._write(meta))
+        self.assertEqual(gguf.kv_cache_bytes(metadata, 131072),
+                         7_516_192_768)
+
+    def test_kv_cache_mismatched_head_lists_return_none(self):
+        meta = dict(META)
+        meta["qwen2.attention.head_count"] = [28] * 27
+        metadata = gguf.read_metadata(self._write(meta))
+        self.assertIsNone(gguf.kv_cache_bytes(metadata, 131072))
+        meta = dict(META)
+        meta["qwen2.attention.head_count_kv"] = [4] * 27
+        metadata = gguf.read_metadata(self._write(meta))
+        self.assertIsNone(gguf.kv_cache_bytes(metadata, 131072))
 
     def test_kv_cache_unknown_type_returns_none(self):
         metadata = gguf.read_metadata(self._write(META))

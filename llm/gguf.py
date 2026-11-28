@@ -110,6 +110,15 @@ def _positive_int(value):
     return value
 
 
+def _positive_int_list(value, length):
+    if not isinstance(value, list) or len(value) != length:
+        return None
+    items = [_positive_int(item) for item in value]
+    if any(item is None for item in items):
+        return None
+    return items
+
+
 KV_BYTES_PER_ELEMENT = {
     "f16": 2.0,
     "bf16": 2.0,
@@ -134,18 +143,22 @@ def kv_cache_bytes(metadata, context, kv_type_k="f16", kv_type_v="f16"):
     except KeyError:
         return None
     n_layer = _positive_int(metadata.get(arch + ".block_count"))
-    n_head = _positive_int(metadata.get(arch + ".attention.head_count"))
-    if n_layer is None or n_head is None:
+    if n_layer is None:
         return None
-    n_kv_raw = metadata.get(arch + ".attention.head_count_kv", n_head)
-    try:
-        if isinstance(n_kv_raw, list):
-            n_kv_total = sum(int(item) for item in n_kv_raw)
-        else:
-            n_kv_total = n_layer * int(n_kv_raw)
-    except (TypeError, ValueError):
+    head_raw = metadata.get(arch + ".attention.head_count")
+    if isinstance(head_raw, list):
+        head_counts = _positive_int_list(head_raw, n_layer)
+    else:
+        head_counts = _positive_int(head_raw)
+    if head_counts is None:
         return None
-    if n_kv_total <= 0:
+    kv_raw = metadata.get(arch + ".attention.head_count_kv", head_raw)
+    if isinstance(kv_raw, list):
+        kv_counts = _positive_int_list(kv_raw, n_layer)
+    else:
+        kv_count = _positive_int(kv_raw)
+        kv_counts = None if kv_count is None else [kv_count] * n_layer
+    if kv_counts is None:
         return None
     d_key = _positive_int(metadata.get(arch + ".attention.key_length"))
     d_value = _positive_int(metadata.get(arch + ".attention.value_length"))
@@ -153,13 +166,21 @@ def kv_cache_bytes(metadata, context, kv_type_k="f16", kv_type_v="f16"):
         embd = _positive_int(metadata.get(arch + ".embedding_length"))
         if embd is None:
             return None
-        if d_key is None:
-            d_key = embd // n_head
-        if d_value is None:
-            d_value = embd // n_head
-    if d_key <= 0 or d_value <= 0:
+    if isinstance(head_counts, list):
+        per_layer_heads = head_counts
+    else:
+        per_layer_heads = [head_counts] * n_layer
+    total = 0
+    for index, heads in enumerate(per_layer_heads):
+        key_dim = d_key if d_key is not None else embd // heads
+        value_dim = d_value if d_value is not None else embd // heads
+        if key_dim <= 0 or value_dim <= 0:
+            return None
+        total += kv_counts[index] * (
+            key_dim * bytes_k + value_dim * bytes_v)
+    if total <= 0:
         return None
-    return int(context * n_kv_total * (d_key * bytes_k + d_value * bytes_v))
+    return int(context * total)
 
 
 def native_context(metadata):
