@@ -86,6 +86,32 @@ class GgufTest(unittest.TestCase):
         metadata = gguf.read_metadata(self._write(meta))
         self.assertEqual(gguf.kv_cache_bytes(metadata, 131072), 3_758_096_384)
 
+    def test_kv_cache_q8_0_is_half_f16(self):
+        metadata = gguf.read_metadata(self._write(META))
+        expected = int(7_516_192_768 * 1.0625 / 2.0)
+        self.assertEqual(
+            gguf.kv_cache_bytes(metadata, 131072, "q8_0", "q8_0"), expected)
+
+    def test_kv_cache_q4_0_is_quarter_f16(self):
+        metadata = gguf.read_metadata(self._write(META))
+        expected = int(7_516_192_768 * 0.5625 / 2.0)
+        self.assertEqual(
+            gguf.kv_cache_bytes(metadata, 131072, "q4_0", "q4_0"), expected)
+
+    def test_kv_cache_asymmetric_types(self):
+        metadata = gguf.read_metadata(self._write(META))
+        expected = 131072 * (28 * 4) * (128 * 1.0625 + 128 * 2.0)
+        self.assertEqual(
+            gguf.kv_cache_bytes(metadata, 131072, "q8_0", "f16"), expected)
+
+    def test_kv_cache_unknown_type_returns_none(self):
+        metadata = gguf.read_metadata(self._write(META))
+        self.assertIsNone(
+            gguf.kv_cache_bytes(metadata, 131072, "q3_k", "f16"))
+        self.assertIsNone(
+            gguf.kv_cache_bytes(metadata, 131072, "f16", "q3_k"))
+        self.assertIsNone(gguf.kv_cache_bytes({}, 131072, "q8_0", "q8_0"))
+
     def test_missing_metadata_returns_none(self):
         self.assertIsNone(gguf.kv_cache_bytes({}, 131072))
         self.assertIsNone(

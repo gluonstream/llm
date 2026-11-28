@@ -110,12 +110,28 @@ def _positive_int(value):
     return value
 
 
-def kv_cache_bytes(metadata, context):
+KV_BYTES_PER_ELEMENT = {
+    "f16": 2.0,
+    "bf16": 2.0,
+    "q8_0": 1.0625,
+    "q5_1": 0.75,
+    "q5_0": 0.6875,
+    "q4_1": 0.625,
+    "q4_0": 0.5625,
+}
+
+
+def kv_cache_bytes(metadata, context, kv_type_k="f16", kv_type_v="f16"):
     """Estimate KV cache bytes for a context, or None if it cannot."""
     arch = metadata.get("general.architecture")
     if not isinstance(arch, str) or not arch:
         return None
     if _positive_int(context) is None:
+        return None
+    try:
+        bytes_k = KV_BYTES_PER_ELEMENT[kv_type_k]
+        bytes_v = KV_BYTES_PER_ELEMENT[kv_type_v]
+    except KeyError:
         return None
     n_layer = _positive_int(metadata.get(arch + ".block_count"))
     n_head = _positive_int(metadata.get(arch + ".attention.head_count"))
@@ -143,7 +159,7 @@ def kv_cache_bytes(metadata, context):
             d_value = embd // n_head
     if d_key <= 0 or d_value <= 0:
         return None
-    return context * n_kv_total * (d_key + d_value) * 2
+    return int(context * n_kv_total * (d_key * bytes_k + d_value * bytes_v))
 
 
 def native_context(metadata):
