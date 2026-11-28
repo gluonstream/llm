@@ -360,6 +360,45 @@ class WarningTest(unittest.TestCase):
                                  warnings=warnings)
             self.assertTrue(any("dup" in w and "alias" in w for w in warnings))
 
+    def test_expected_dedupe_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = config.BUILTIN_PROFILES[config.DEFAULT]
+            snapshot = cache_snapshot(root, builtin["repo"], builtin["filename"])
+            registry = Path(tmp) / "models.json"
+            discovered = {
+                "qwen2-5-7b-instruct-q4-k-m": {
+                    "id": "qwen2-5-7b-instruct-q4-k-m",
+                    "alias": "qwen2-5-7b-instruct-q4-k-m",
+                    "repo": builtin["repo"],
+                    "filename": builtin["filename"],
+                    "revision": "main",
+                    "path": str(snapshot),
+                    "context": 8192,
+                    "sampling": {},
+                },
+            }
+            warnings = []
+            with mock.patch.object(config, "HF_CACHE", root):
+                merged = config.load_profiles(
+                    path=registry, discovered=discovered, warnings=warnings)
+            self.assertNotIn("qwen2-5-7b-instruct-q4-k-m", merged)
+            self.assertEqual(warnings, [])
+
+    def test_dropped_user_model_still_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "models.json"
+            alias = config.BUILTIN_PROFILES[config.DEFAULT]["alias"]
+            registry.write_text(json.dumps({"other": {
+                "id": "other", "alias": alias, "path": "/tmp/x",
+                "context": 1, "sampling": {}}}))
+            warnings = []
+            merged = config.load_profiles(path=registry, discovered={},
+                                          warnings=warnings)
+            self.assertNotIn("other", merged)
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("other", warnings[0])
+
     def test_dropped_user_profile_does_not_suppress_discovered_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = Path(tmp) / "models.json"

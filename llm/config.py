@@ -194,8 +194,7 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
         model_source, model_path = _identity(profile)
         if ((model_source and model_source in sources)
                 or (model_path and model_path in paths)):
-            warnings.append("skipped discovered model %r: duplicate of an already-registered model"
-                            % model_id)
+            # Expected: the same file reached through another discovery entry.
             continue
         merged[model_id] = dict(profile)
         if model_source:
