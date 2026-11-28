@@ -464,6 +464,26 @@ def memory_budget(total_ram, unified=True, available=None):
     return int(base * (0.80 if unified else 0.75))
 
 
+def context_memory(machine):
+    """Memory that constrains the context: VRAM on a dGPU, else system RAM."""
+    if machine.unified:
+        return machine.available_ram or machine.total_ram
+    return machine.vram or machine.available_ram or machine.total_ram
+
+
+def recommended_context(machine=None):
+    """Pick a context size from the memory that constrains the model."""
+    machine = machine or detect_hardware()
+    memory = context_memory(machine)
+    if memory <= 0:
+        return DEFAULT_CONTEXT
+    if memory <= SMALL_MEMORY:
+        return SMALL_CONTEXT
+    if memory > LARGE_MEMORY:
+        return LARGE_CONTEXT
+    return DEFAULT_CONTEXT
+
+
 def context_budget(machine):
     """Return the capacity budget for model weights plus KV cache, or None."""
     if machine.unified:

@@ -527,8 +527,8 @@ def cmd_get(args):
     else:
         profile = hfcache.downloaded_profile(
             repo, chosen["name"], args.revision, commit, model_id, alias,
-            context=(args.context if args.context is not None else 8192),
-            sampling=config.DEFAULT_SAMPLING)
+            context=context, sampling=config.DEFAULT_SAMPLING)
+        profile["context_auto"] = context_auto
     if args.requires_llama_cpp:
         profile["min_llama_cpp"] = args.requires_llama_cpp
     if existing and existing["id"] in config.BUILTIN_PROFILES:

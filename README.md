@@ -315,9 +315,9 @@ the current value and says why:
 
 ```
 MODEL                 FILE       CONTEXT          EST. NEEDED   ACTION
-qwen2.5-7b-instruct   4.4 GiB    8,192 → 128K     12.9 GiB      updated
-inkling-2-mini       16.4 GiB    8,192 → 64K      27.9 GiB      updated
-glm-4.7-flash        16.3 GiB    32,768           31.2 GiB      kept (no candidate fits)
+qwen2.5-7b-instruct   4.4 GiB    64K → 128K       9.3 GiB       updated
+inkling-2-mini       16.4 GiB    8K → 128K        24.0 GiB      updated
+glm-4.7-flash        16.3 GiB    32K → 128K       24.2 GiB      updated
 ```
 
 - `--context N` sets an upper bound (a ceiling) for the chooser; it never
@@ -382,8 +382,9 @@ batch/ubatch:
 
 ```
 MODEL                  FILE      CONTEXT         KV     BATCH     EST. NEEDED   ACTION
-qwen2.5-7b-instruct    4.4 GiB   8K → 128K      q8_0   2048/512  10.5 GiB      updated
-inkling-2-mini        16.4 GiB   8K → 64K       q8_0   2048/512  27.4 GiB      updated
+qwen2.5-7b-instruct    4.4 GiB   64K → 128K     q8_0   2048/512   9.3 GiB      updated
+inkling-2-mini        16.4 GiB   8K → 128K      q8_0   2048/512  24.0 GiB      updated
+glm-4.7-flash         16.3 GiB   32K → 128K     q8_0   2048/512  24.2 GiB      updated
 ```
 
 `llm context MODEL` prints the effective runtime summary

@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gguf, hfcache, host
+from . import gguf, hardware, hfcache, host
 
 HOME = Path.home()
 STATE = Path(os.environ.get(
@@ -36,7 +36,8 @@ BUILTIN_PROFILES = {
         "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
         "filename": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
         "revision": "main",
-        "context": 8192,
+        "context": DEFAULT_CONTEXT,
+        "context_auto": True,
         "sampling": {"temperature": 0, "top_p": 0.95, "min_p": 0.05, "repeat_penalty": 1.0},
     },
     "glm-4.7-flash-ud-q4-k-xl": {
@@ -389,6 +390,7 @@ def load_profiles(path=None, builtin=None, warnings=None, discovered=None):
             merged[model_id] = dict(merged[model_id])
             if "context" in override:
                 merged[model_id]["context"] = override["context"]
+                merged[model_id]["context_auto"] = False
             if "runtime" in override:
                 merged[model_id]["runtime"] = dict(override["runtime"])
         else:
@@ -456,6 +458,7 @@ def set_context(model_id, context, path=None):
     if model_id in registry.models:
         registry.models[model_id] = dict(registry.models[model_id])
         registry.models[model_id]["context"] = context
+        registry.models[model_id]["context_auto"] = False
         registry.overrides.pop(model_id, None)
     elif model_id in BUILTIN_PROFILES or model_id in PROFILES:
         registry.overrides[model_id] = {"context": context}
@@ -476,6 +479,7 @@ def set_tuning(model_id, context, runtime, path=None):
     if model_id in registry.models:
         registry.models[model_id] = dict(registry.models[model_id])
         registry.models[model_id]["context"] = context
+        registry.models[model_id]["context_auto"] = False
         registry.models[model_id]["runtime"] = clean_runtime
         registry.overrides.pop(model_id, None)
     elif model_id in BUILTIN_PROFILES or model_id in PROFILES:

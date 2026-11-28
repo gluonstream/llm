@@ -248,7 +248,8 @@ class GetCacheTest(unittest.TestCase):
         return existing
 
     def test_get_writes_snapshot_and_profile(self):
-        self.assertEqual(self._run(["get", "owner/repo:Q4"]), 0)
+        with mock.patch.object(hardware, "recommended_context", return_value=8192):
+            self.assertEqual(self._run(["get", "owner/repo:Q4"]), 0)
         snapshot = self._snapshot()
         blob = self._repo_dir() / "blobs" / self.sha
         self.assertTrue(snapshot.is_symlink())
@@ -268,6 +269,7 @@ class GetCacheTest(unittest.TestCase):
         self.assertEqual(profile["revision"], "main")
         self.assertEqual(profile["path"], str(snapshot))
         self.assertEqual(profile["context"], 8192)
+        self.assertTrue(profile["context_auto"])
         self.assertEqual(profile["sampling"], config.DEFAULT_SAMPLING)
 
         manifest = self.state / "manifests" / (profile["id"] + ".json")
@@ -296,38 +298,24 @@ class GetCacheTest(unittest.TestCase):
         self.assertEqual(profile["path"], str(snapshot))
 
     def test_get_uses_hardware_recommended_context(self):
-        files = [{"name": "M-Q4_K_M.gguf", "size": 10, "sha256": "a"}]
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(config, "migrate_state", return_value=False), \
-             mock.patch.object(hub, "model_files", return_value=files), \
-             mock.patch.object(hub, "download_file",
-                               return_value=Path(tmp) / "M-Q4_K_M.gguf"), \
-             mock.patch.object(hub, "write_manifest"), \
-             mock.patch.object(hardware, "preflight", return_value=[]), \
+        with mock.patch.object(hardware, "preflight", return_value=[]), \
              mock.patch.object(hardware, "recommended_context",
                                return_value=49152) as recommended, \
              mock.patch.object(config, "register_model") as register, \
              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["get", "owner/repo:Q4_K_M"]), 0)
+            self.assertEqual(self._run(["get", "owner/repo:Q4"]), 0)
         recommended.assert_called_once()
         profile = register.call_args[0][0]
         self.assertEqual(profile["context"], 49152)
         self.assertTrue(profile["context_auto"])
 
     def test_get_explicit_context_is_manual(self):
-        files = [{"name": "M-Q4_K_M.gguf", "size": 10, "sha256": "a"}]
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(config, "migrate_state", return_value=False), \
-             mock.patch.object(hub, "model_files", return_value=files), \
-             mock.patch.object(hub, "download_file",
-                               return_value=Path(tmp) / "M-Q4_K_M.gguf"), \
-             mock.patch.object(hub, "write_manifest"), \
-             mock.patch.object(hardware, "preflight", return_value=[]), \
+        with mock.patch.object(hardware, "preflight", return_value=[]), \
              mock.patch.object(hardware, "recommended_context") as recommended, \
              mock.patch.object(config, "register_model") as register, \
              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(
-                cli.main(["get", "owner/repo:Q4_K_M", "--context", "16384"]), 0)
+                self._run(["get", "owner/repo:Q4", "--context", "16384"]), 0)
         recommended.assert_not_called()
         profile = register.call_args[0][0]
         self.assertEqual(profile["context"], 16384)
@@ -866,7 +854,7 @@ class ContextCliTest(unittest.TestCase):
                 code, out, _ = self._run(["context", "qwen2.5-7b-instruct"])
         self.assertEqual(code, 0)
         self.assertIn("qwen2.5-7b-instruct-graphify", out)
-        self.assertIn("8K", out)
+        self.assertIn("64K", out)
         self.assertIn("built-in", out)
 
     def test_context_sets_builtin_override(self):
