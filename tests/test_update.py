@@ -167,7 +167,8 @@ class UpdateTest(unittest.TestCase):
                          ["git", "clone", update.REPO_URL, str(expected)])
 
     def test_main_forwards_dir_to_update(self):
-        with mock.patch.object(update, "update",
+        with mock.patch.object(update, "latest_version", return_value=None), \
+             mock.patch.object(update, "update",
                                return_value=Path("/tmp/custom")) as patched:
             with mock.patch("builtins.print"):
                 self.assertEqual(update.main(["--dir", "/tmp/custom"]), 0)

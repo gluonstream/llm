@@ -41,6 +41,10 @@ class CliTest(unittest.TestCase):
         text = buffer.getvalue()
         for command in ("list", "status", "use", "doctor", "logs", "version"):
             self.assertIn(command, text)
+        for example in ("analyze", "apply", "--runtime-policy extended",
+                        "--sync-opencode", "--sync-pi", "--sync-codex",
+                        "remove qwen2.5-7b-instruct-graphify --dry-run"):
+            self.assertIn(example, text)
 
     def test_prog_follows_invocation_name(self):
         with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/llm"]):
@@ -599,24 +603,24 @@ class VersionCliTest(unittest.TestCase):
         return buffer.getvalue()
 
     def test_version_prints_installed_and_up_to_date(self):
-        with mock.patch.object(update, "latest_version", return_value="1.4.0"):
+        with mock.patch.object(update, "latest_version", return_value="1.4.1"):
             self.assertEqual(self._output(["version"]).splitlines(), [
-                "llm 1.4.0",
-                "last version is 1.4.0. you are up to date.",
+                "llm 1.4.1",
+                "last version is 1.4.1. you are up to date.",
             ])
 
     def test_version_uses_invocation_name(self):
         with mock.patch.object(sys, "argv", ["/Users/x/.local/bin/lmm"]), \
-             mock.patch.object(update, "latest_version", return_value="1.4.0"):
+             mock.patch.object(update, "latest_version", return_value="1.4.1"):
             lines = self._output(["version"]).splitlines()
-        self.assertEqual(lines[0], "lmm 1.4.0")
+        self.assertEqual(lines[0], "lmm 1.4.1")
 
     def test_version_points_to_update_when_latest_is_newer(self):
-        with mock.patch.object(update, "latest_version", return_value="1.4.1"):
+        with mock.patch.object(update, "latest_version", return_value="1.4.2"):
             lines = self._output(["version"]).splitlines()
         self.assertEqual(lines, [
-            "llm 1.4.0",
-            "last version is 1.4.1. run `llm update` to update.",
+            "llm 1.4.1",
+            "last version is 1.4.2. run `llm update` to update.",
         ])
 
     def test_update_skips_when_latest_is_not_newer(self):
@@ -647,6 +651,14 @@ class DoctorCliTest(unittest.TestCase):
         values.update(kwargs)
         values["gpus"] = list(gpus)
         return hardware.Hardware(**values)
+
+    def test_doctor_shows_current_llm_version(self):
+        from llm import __version__
+        text = self._doctor(
+            profiles={},
+            selected={"id": "x", "alias": "x", "context": 8192})
+        self.assertIn("llm:", text)
+        self.assertIn(__version__, text)
 
     def _doctor(self, machine=None, profiles=None, registry=None, pid=None,
                 healthy=False, server_context=None, selected=None,
@@ -836,21 +848,24 @@ class ContextCliTest(unittest.TestCase):
     def test_context_lists_models(self):
         with tempfile.TemporaryDirectory() as tmp:
             models = Path(tmp) / "models.json"
+            fixed = {key: dict(profile) for key, profile in config.BUILTIN_PROFILES.items()}
             with mock.patch.object(config, "USER_MODELS", models), \
-                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)):
+                 mock.patch.object(config, "PROFILES", fixed):
                 code, out, _ = self._run(["context"])
         self.assertEqual(code, 0)
         for alias in ("qwen2.5-7b-instruct-graphify", "glm-4.7-flash",
                       "inkling-2-mini"):
             self.assertIn(alias, out)
+        self.assertIn("64K", out)
         self.assertIn("32K", out)
         self.assertIn("8K", out)
 
     def test_context_shows_model_value_and_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             models = Path(tmp) / "models.json"
+            fixed = {key: dict(profile) for key, profile in config.BUILTIN_PROFILES.items()}
             with mock.patch.object(config, "USER_MODELS", models), \
-                 mock.patch.object(config, "PROFILES", dict(config.PROFILES)):
+                 mock.patch.object(config, "PROFILES", fixed):
                 code, out, _ = self._run(["context", "qwen2.5-7b-instruct"])
         self.assertEqual(code, 0)
         self.assertIn("qwen2.5-7b-instruct-graphify", out)
@@ -966,6 +981,17 @@ class ApplyCliTest(unittest.TestCase):
         self.models = Path(temporary.name) / "models.json"
         self._mocks = {}
 
+    def _profiles(self):
+        return {
+            config.DEFAULT: {
+                "id": config.DEFAULT,
+                "alias": "qwen2.5-7b-instruct-graphify",
+                "path": "/x/qwen.gguf",
+                "context": 8192,
+                "sampling": {},
+            },
+        }
+
     def _machine(self, total_ram=None, available_ram=None,
                  unified=True, vram=None):
         if total_ram is None:
@@ -1032,7 +1058,7 @@ class ApplyCliTest(unittest.TestCase):
     def test_apply_dry_run_writes_nothing(self):
         machine = self._machine()
         code, out, _ = self._apply(
-            ["apply", "--dry-run"], dict(config.PROFILES),
+            ["apply", "--dry-run"], self._profiles(),
             {config.DEFAULT: 4 * self.GIB}, machine)
         self.assertEqual(code, 0)
         self.assertFalse(self.models.exists())
@@ -1042,7 +1068,7 @@ class ApplyCliTest(unittest.TestCase):
         machine = self._machine()
         out = io.StringIO()
         with mock.patch.object(config, "USER_MODELS", self.models), \
-             mock.patch.object(config, "PROFILES", dict(config.PROFILES)), \
+             mock.patch.object(config, "PROFILES", self._profiles()), \
              mock.patch.object(cli, "_local_size", return_value=4 * self.GIB), \
              mock.patch.object(cli.gguf, "read_metadata", return_value=None), \
              mock.patch.object(cli.hardware, "detect_hardware",
@@ -1053,14 +1079,14 @@ class ApplyCliTest(unittest.TestCase):
                                lambda: contextlib.nullcontext()), \
              redirect_stdout(out), redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(["apply", "qwen2.5-7b-instruct"]), 0)
-            self.assertEqual(config.PROFILES[config.DEFAULT]["context"], 131072)
+            self.assertEqual(config.PROFILES[config.DEFAULT]["context"], 65536)
         data = json.loads(self.models.read_text())
-        self.assertEqual(data["overrides"][config.DEFAULT]["context"], 131072)
+        self.assertEqual(data["overrides"][config.DEFAULT]["context"], 65536)
 
     def test_apply_context_is_ceiling(self):
         machine = self._machine()
         code, _, _ = self._apply(
-            ["apply", "--context", "65536"], dict(config.PROFILES),
+            ["apply", "--context", "65536"], self._profiles(),
             {config.DEFAULT: 4 * self.GIB}, machine)
         self.assertEqual(code, 0)
         data = json.loads(self.models.read_text())
@@ -1091,7 +1117,7 @@ class ApplyCliTest(unittest.TestCase):
         identity = ("llama-server -m /x.gguf "
                     "--alias qwen2.5-7b-instruct-graphify --port 18081")
         code, out, _ = self._apply(
-            ["apply", "qwen2.5-7b-instruct"], dict(config.PROFILES),
+            ["apply", "qwen2.5-7b-instruct"], self._profiles(),
             {config.DEFAULT: 4 * self.GIB}, machine,
             running=123, server_context=8192, identity=identity,
             start_result=(4242, True, {"alias": "qwen", "id": config.DEFAULT}))
@@ -1108,7 +1134,7 @@ class ApplyCliTest(unittest.TestCase):
                     "--alias qwen2.5-7b-instruct-graphify --port 18081")
         code, out, _ = self._apply(
             ["apply", "qwen2.5-7b-instruct", "--no-restart"],
-            dict(config.PROFILES), {config.DEFAULT: 4 * self.GIB}, machine,
+            self._profiles(), {config.DEFAULT: 4 * self.GIB}, machine,
             running=123, server_context=8192, identity=identity)
         self.assertEqual(code, 0)
         self._mocks["stop"].assert_not_called()
@@ -1134,7 +1160,7 @@ class ApplyCliTest(unittest.TestCase):
         self._mocks["codex_sync"].assert_not_called()
         installed = self._mocks["oc_sync"].call_args[0][0]
         self.assertIn("m1", installed)
-        self.assertEqual(installed["m1"]["context"], 131072)
+        self.assertEqual(installed["m1"]["context"], 65536)
 
     def test_apply_syncs_pi_with_flag(self):
         machine = self._machine()
@@ -1233,7 +1259,7 @@ class ApplyCliTest(unittest.TestCase):
         machine = self._machine()
         choice = self._choice()
         code, out, _ = self._apply(
-            ["apply", "qwen2.5-7b-instruct"], dict(config.PROFILES),
+            ["apply", "qwen2.5-7b-instruct"], self._profiles(),
             {config.DEFAULT: 4 * self.GIB}, machine, choose_runtime=choice)
         self.assertEqual(code, 0)
         data = json.loads(self.models.read_text())
@@ -1300,7 +1326,7 @@ class ApplyCliTest(unittest.TestCase):
         choice = self._choice()
         with mock.patch.object(config, "set_tuning") as set_tuning:
             code, _, _ = self._apply(
-                ["apply", "--dry-run"], dict(config.PROFILES),
+                ["apply", "--dry-run"], self._profiles(),
                 {config.DEFAULT: 4 * self.GIB}, machine, choose_runtime=choice)
         self.assertEqual(code, 0)
         set_tuning.assert_not_called()

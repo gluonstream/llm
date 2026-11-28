@@ -14,7 +14,7 @@
 
 - Python 3.9+, standard library only; no third-party imports; no `X | Y` runtime annotations.
 - Tests via `python3 -m unittest discover -s tests`; never run a real server in tests.
-- Balanced default: `q8_0` K+V, 2048/512, cache-reuse 256, fit on target 2048.
+- Balanced default: `q8_0` K+V, 1024/256, 64K context, cache-reuse 256, fit on target 2048.
 - Quantized KV requires `-fa on`; if the flag is unsupported, keep f16.
 - Emit optional flags only when `llama-server --help` supports them.
 - Old profiles without `runtime` keep today's args (f16, 512/256, no fit/cache-reuse).
@@ -130,11 +130,11 @@ git commit -m "feat: add typed KV math and usage-history parsing"
 ```python
 # tests/test_runtime.py
 def test_balanced_policy_fields(self)
-    # q8_0/q8_0, 2048/512, cache_reuse 256, fit True/2048, fa on, parallel 1
+    # q8_0/q8_0, 1024/256, cache_reuse 256, fit True/2048, fa on, parallel 1
 def test_conservative_and_extended_kv(self)
     # conservative q8_0 64K; extended q4_0 128K
 def test_candidates_filter_by_observed_peak(self)
-    # peak 40_000 -> [128K, 64K]; peak 70_000 -> [128K]
+    # balanced candidates -> [64K]; extended -> [128K]
 def test_kv_override_applies_to_both(self)
 def test_no_fit_and_no_cache_reuse(self)
 def test_choose_runtime_uses_typed_kv(self)
@@ -160,9 +160,9 @@ Expected: missing `llm.runtime` / `set_tuning`.
 
 `runtime.POLICIES`:
 - conservative: f16/f16, [65536], 1024/256, cache-reuse 256, fit 2048.
-- balanced: q8_0/q8_0, [131072, 65536], 2048/512.
-- extended: q8_0/q8_0, [131072], 2048/1024.
-- aggressive: q4_0/q4_0, [131072], 2048/1024.
+- balanced: q8_0/q8_0, [65536], 1024/256.
+- extended: q8_0/q8_0, [131072], 1024/256.
+- aggressive: q4_0/q4_0, [131072], 1024/256.
 All: `flash_attn="on"`, `parallel=1`, `cache_prompt=True`, `cache_reuse=256`,
 `fit=True`, `fit_target=2048`, `kv_unified=True`, `no_kv_offload=False`.
 

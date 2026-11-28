@@ -113,8 +113,12 @@ def cmd_context(args):
                 "cannot auto-size %s: model file not found" % alias)
         metadata = (gguf.read_metadata(profile["path"])
                     if profile.get("path") else None)
-        machine = hardware.detect_hardware(models_dir=MODELS_DIR)
-        choice = hardware.choose_context(size, context, machine, metadata)
+        machine = hardware.detect_hardware(models_dir=hfcache.cache_root())
+        runtime = profile.get("runtime") or {}
+        choice = hardware.choose_context(
+            size, context, machine, metadata,
+            kv_type_k=runtime.get("kv_type_k", "f16"),
+            kv_type_v=runtime.get("kv_type_v", "f16"))
         print("%s: %s (%s)" % (alias, render.short_context(choice.context),
                                choice.reason))
         if args.dry_run:
@@ -684,6 +688,8 @@ def _model_source(profile_id, profile, registry):
 
 
 def cmd_doctor(args):
+    from . import __version__
+    print("llm:          %s" % __version__)
     version = diagnose.llama_server_version(config.LLAMA_SERVER)
     print("llama-server: %s" % (version["raw"] or "not found at " + config.LLAMA_SERVER))
     package = diagnose.llama_cpp_package_status()
@@ -850,16 +856,32 @@ def _program_name():
 def build_parser(prog=None):
     global _subparsers
     program = prog or _program_name()
+    examples = (
+        "list",
+        "analyze",
+        "analyze --context 131072",
+        "context inkling auto",
+        "apply",
+        "apply --runtime-policy extended",
+        "apply --runtime-policy extended --sync-opencode",
+        "apply --runtime-policy extended --sync-pi",
+        "apply --runtime-policy extended --sync-codex",
+        "apply --sync-clients",
+        "remove qwen2.5-7b-instruct-graphify --dry-run",
+        "migrate-cache --dry-run",
+        "search inkling",
+        "get unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_XL",
+        "use inkling",
+        "start",
+        "logs -f",
+        "doctor",
+        "version",
+    )
     parser = argparse.ArgumentParser(
         prog=program,
         description="Manage the persistent local llama.cpp model server.",
-        epilog=("examples:\n"
-                "  %s list\n"
-                "  %s search inkling\n"
-                "  %s get unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_XL\n"
-                "  %s use inkling\n"
-                "  %s logs -f\n"
-                "  %s doctor") % ((program,) * 6),
+        epilog="examples:\n" + "\n".join(
+            "  %s %s" % (program, example) for example in examples),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     _subparsers = {}

@@ -53,9 +53,9 @@ prompt-cache reuse, and lets `--fit` preserve a 2 GiB margin.
 | Policy | KV K/V | Context candidates | batch/ubatch | cache-reuse | fit |
 |---|---|---|---|---|---|
 | `conservative` | `f16` / `f16` | 64K | 1024 / 256 | 256 | on, 2048 |
-| `balanced` (default) | `q8_0` / `q8_0` | 128K, 64K | 2048 / 512 | 256 | on, 2048 |
-| `extended` | `q8_0` / `q8_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
-| `aggressive` | `q4_0` / `q4_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
+| `balanced` (default) | `q8_0` / `q8_0` | 64K | 1024 / 256 | 256 | on, 2048 |
+| `extended` | `q8_0` / `q8_0` | 128K | 1024 / 256 | 256 | on, 2048 |
+| `aggressive` | `q4_0` / `q4_0` | 128K | 1024 / 256 | 256 | on, 2048 |
 
 All policies set `flash_attn="on"`, `parallel=1`, `cache_prompt=true`,
 `kv_unified=true`, `no_kv_offload=false`.
@@ -104,7 +104,7 @@ subtracted from the planning budget.
 
 Context candidates:
 
-- policy candidates in descending order (e.g. `[128K, 64K]`);
+- policy candidates in descending order (balanced starts at 64K for safety; extended uses 128K);
 - if `peak` is not `None` and > 0, keep only candidates `>= peak * 1.5`, or all
   candidates when none reach it;
 - `choose_context` picks the largest that fits; if none fit, keep current and
@@ -162,15 +162,15 @@ a hidden alias for `--runtime-policy`.
 `ACTION`. Example:
 
 ```
-qwen2.5-7b-instruct   4.4 GiB   8K → 128K   q8_0   2048/512   10.5 GiB   updated
-inkling-2-mini       16.4 GiB   8K → 64K    q8_0   2048/512   27.4 GiB   updated
+qwen2.5-7b-instruct   4.4 GiB   64K           q8_0   1024/256   6.5 GiB    updated
+inkling-2-mini       16.4 GiB   8K → 64K    q8_0   1024/256   21.1 GiB   updated
 ```
 
 Restart when the running model's `context` or `runtime` changed, or `/props`
 differs; `--no-restart` prints `llm restart`. `--dry-run` writes nothing.
 
 `llm context` prints the effective context and a runtime summary
-(`q8_0 KV · 2048/512 · fit 2048 · cache-reuse 256`); `context auto` uses the
+(`q8_0 KV · 1024/256 · fit 2048 · cache-reuse 256`); `context auto` uses the
 profile's current KV type (f16 if unset) and writes only context.
 
 `doctor` adds a `Runtime:` line for the selected model with KV, batch/ubatch,

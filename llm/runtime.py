@@ -39,9 +39,9 @@ def _policy(kv_type_k, kv_type_v, candidates, batch, ubatch):
 
 POLICIES = {
     "conservative": _policy("f16", "f16", [65536], 1024, 256),
-    "balanced": _policy("q8_0", "q8_0", [131072, 65536], 2048, 512),
-    "extended": _policy("q8_0", "q8_0", [131072], 2048, 1024),
-    "aggressive": _policy("q4_0", "q4_0", [131072], 2048, 1024),
+    "balanced": _policy("q8_0", "q8_0", [65536], 1024, 256),
+    "extended": _policy("q8_0", "q8_0", [131072], 1024, 256),
+    "aggressive": _policy("q4_0", "q4_0", [131072], 1024, 256),
 }
 
 DEFAULT_POLICY = "balanced"
@@ -143,9 +143,13 @@ def choose_runtime(model_size, current_context, machine, metadata=None,
 
     runtime = policy_runtime(policy, overrides)
     candidates = candidates_for(policy, observed)
+    policy_max = max(POLICIES[policy]["candidates"])
+    effective_ceiling = policy_max if ceiling is None else min(ceiling, policy_max)
+    if ceiling is not None and ceiling < min(candidates) and ceiling not in candidates:
+        candidates = candidates + [ceiling]
     choice = hardware.choose_context(
         model_size, current_context, machine, metadata,
-        candidates=candidates, ceiling=ceiling,
+        candidates=candidates, ceiling=effective_ceiling,
         kv_type_k=runtime["kv_type_k"], kv_type_v=runtime["kv_type_v"])
     return TunedChoice(
         context=choice.context,

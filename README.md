@@ -341,9 +341,9 @@ silently fall back to f16 KV, 512/256 batches, and no cache-reuse).
 | Policy | KV K/V | Context candidates | batch/ubatch | cache-reuse | fit |
 | --- | --- | --- | --- | --- | --- |
 | `conservative` | `f16` / `f16` | 64K | 1024 / 256 | 256 | on, 2048 |
-| `balanced` (default) | `q8_0` / `q8_0` | 128K, 64K | 2048 / 512 | 256 | on, 2048 |
-| `extended` | `q8_0` / `q8_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
-| `aggressive` | `q4_0` / `q4_0` | 128K | 2048 / 1024 | 256 | on, 2048 |
+| `balanced` (default) | `q8_0` / `q8_0` | 64K | 1024 / 256 | 256 | on, 2048 |
+| `extended` | `q8_0` / `q8_0` | 128K | 1024 / 256 | 256 | on, 2048 |
+| `aggressive` | `q4_0` / `q4_0` | 128K | 1024 / 256 | 256 | on, 2048 |
 
 - `conservative` is maximum accuracy at the cost of more KV RAM: f16 K and V, 64K.
 - `balanced` cuts KV RAM roughly in half with near-identical perplexity: q8_0 K
@@ -382,13 +382,13 @@ batch/ubatch:
 
 ```
 MODEL                  FILE      CONTEXT         KV     BATCH     EST. NEEDED   ACTION
-qwen2.5-7b-instruct    4.4 GiB   64K → 128K     q8_0   2048/512   9.3 GiB      updated
-inkling-2-mini        16.4 GiB   8K → 128K      q8_0   2048/512  24.0 GiB      updated
-glm-4.7-flash         16.3 GiB   32K → 128K     q8_0   2048/512  24.2 GiB      updated
+qwen2.5-7b-instruct    4.4 GiB   64K            q8_0   1024/256   6.5 GiB      updated
+inkling-2-mini        16.4 GiB   8K → 64K       q8_0   1024/256  21.1 GiB      updated
+glm-4.7-flash         16.3 GiB   32K → 64K      q8_0   1024/256  21.1 GiB      updated
 ```
 
 `llm context MODEL` prints the effective runtime summary
-(`q8_0 KV · 2048/512 · fit 2048 · cache-reuse 256`), and `llm doctor` adds the
+(`q8_0 KV · 1024/256 · fit 2048 · cache-reuse 256`), and `llm doctor` adds the
 same runtime line plus the observed peak from the log.
 
 ### Analyzing KV memory
